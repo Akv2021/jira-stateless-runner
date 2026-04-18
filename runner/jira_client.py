@@ -132,3 +132,47 @@ class JiraClient:
         response = await self._request("GET", f"/rest/api/3/issue/{issue_key}")
         result: dict[str, Any] = response.json()
         return result
+
+    async def count_issues(self, jql: str) -> int:
+        """Return the number of issues matching ``jql``.
+
+        Uses ``/rest/api/3/search`` with ``maxResults=0`` so Jira returns
+        only the ``total`` counter without any issue payload. Intended
+        for existence checks such as the idempotency-label lookup in
+        ``runner.idempotency.has_been_applied`` (§5.3).
+        """
+        response = await self._request(
+            "GET",
+            "/rest/api/3/search",
+            params={"jql": jql, "maxResults": 0},
+        )
+        payload: dict[str, Any] = response.json()
+        total = payload.get("total", 0)
+        return int(total)
+
+    async def post_comment(self, issue_key: str, body_text: str) -> dict[str, Any]:
+        """Post a plain-text comment on ``issue_key`` and return the Jira payload.
+
+        Wraps ``body_text`` in the minimal Atlassian Document Format
+        envelope required by the Jira REST API v3 comment endpoint, with
+        newlines preserved via ``hardBreak`` nodes so the §5.2 multi-line
+        audit template renders correctly in the Jira UI.
+        """
+        content: list[dict[str, Any]] = []
+        for index, line in enumerate(body_text.split("\n")):
+            if index > 0:
+                content.append({"type": "hardBreak"})
+            if line:
+                content.append({"type": "text", "text": line})
+        adf_body: dict[str, Any] = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [{"type": "paragraph", "content": content}],
+            }
+        }
+        response = await self._request(
+            "POST", f"/rest/api/3/issue/{issue_key}/comment", json=adf_body
+        )
+        result: dict[str, Any] = response.json()
+        return result

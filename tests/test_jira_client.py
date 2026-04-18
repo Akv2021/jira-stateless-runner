@@ -130,3 +130,34 @@ async def test_injected_client_not_closed_on_aexit() -> None:
         pass
     assert not external.is_closed
     await external.aclose()
+
+
+@pytest.mark.anyio
+async def test_count_issues_returns_total(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/search?jql=project+%3D+PROJ&maxResults=0",
+        json={"total": 42, "issues": []},
+    )
+    async with JiraClient() as client:
+        total = await client.count_issues("project = PROJ")
+    assert total == 42
+
+
+@pytest.mark.anyio
+async def test_post_comment_wraps_text_in_adf(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue/{ISSUE_KEY}/comment",
+        method="POST",
+        json={"id": "10001"},
+    )
+    async with JiraClient() as client:
+        await client.post_comment(ISSUE_KEY, "line1\nline2")
+    request = httpx_mock.get_requests()[0]
+    import json as _json
+
+    sent = _json.loads(request.content)
+    paragraph = sent["body"]["content"][0]
+    assert paragraph["type"] == "paragraph"
+    texts = [node.get("text") for node in paragraph["content"] if node["type"] == "text"]
+    assert texts == ["line1", "line2"]
+    assert any(node["type"] == "hardBreak" for node in paragraph["content"])
