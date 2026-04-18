@@ -1,0 +1,60 @@
+# Pre-commit configuration for jira-stateless-runner
+#
+# Enforces automated quality and security gates per:
+#   - docs/ExternalRunner.md §8.2 clause 1 — mandatory gitleaks pre-commit hook
+#   - docs/ExternalRunner.md §9.4 — ruff + mypy as Definition-of-Done gates
+#
+# Install locally:   pre-commit install
+# Run on all files:  pre-commit run --all-files
+# Bump pinned revs:  pre-commit autoupdate
+#
+# Hooks run in declaration order: file hygiene first (normalise), then
+# credential scan (fail fast on secrets), then lint + format, then type check.
+
+default_language_version:
+  python: python3.11
+
+default_stages: [pre-commit]
+
+repos:
+  # --- File hygiene ---------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # --unsafe permits GitHub Actions workflow YAML custom tags (e.g.,
+        # `!reference`) that the strict parser rejects. Required for
+        # .github/workflows/ YAMLs added in M0.8 / M10.
+        args: ['--unsafe']
+
+  # --- Credential scanning (MANDATORY per §8.2 clause 1) --------------------
+  # Hook auto-discovers .gitleaks.toml at repo root (authored in M0.5).
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
+  # --- Linting + formatting (uses pyproject.toml [tool.ruff] config) --------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ['--fix']
+      - id: ruff-format
+
+  # --- Static type checking (uses pyproject.toml [tool.mypy] strict = true) -
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        files: ^(runner|tests)/
+        # mypy runs in an isolated env; declare runtime deps here so the
+        # type-checker can resolve imports of pydantic, httpx, tenacity, etc.
+        additional_dependencies:
+          - 'pydantic>=2.5,<3.0'
+          - 'httpx>=0.27,<1.0'
+          - 'tenacity>=8.2,<10.0'
+          - 'pytest>=8.0,<9.0'
+          - 'types-python-dateutil'
