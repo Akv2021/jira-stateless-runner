@@ -115,11 +115,11 @@ class ChangelogEvent(BaseModel):
     deltas that classify the event into ``issue_created`` /
     ``subtask_transitioned_to_done`` / ``ignored`` (see §4.1).
 
-    ``issuetype`` and ``is_new_issue`` are populated by the event
-    ingestor (M8 polling loop) from the sibling issue metadata so the
-    rule handlers (§4.1) can filter without a second Jira fetch.
-    Absent on replay-from-history where only the changelog row is
-    available; callers must handle ``None`` / ``False``.
+    ``issuetype``, ``is_new_issue`` and ``is_status_change_to_done`` are
+    populated by the event ingestor (M8 polling loop) from the sibling
+    issue metadata so the rule handlers (§4.1) can filter without a
+    second Jira fetch. Absent on replay-from-history where only the
+    changelog row is available; callers must handle ``None`` / ``False``.
     """
 
     model_config = _BASE_CONFIG
@@ -131,6 +131,7 @@ class ChangelogEvent(BaseModel):
     items: tuple[ChangelogItem, ...] = ()
     issuetype: str | None = None
     is_new_issue: bool = False
+    is_status_change_to_done: bool = False
 
 
 __all__ = [

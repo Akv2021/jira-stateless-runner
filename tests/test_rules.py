@@ -1,15 +1,9 @@
-"""Integration tests for runner.rules.rule1_unit_created (M5).
+"""Integration tests for runner.rules.
 
-Per docs/ImplementationRoadmap.md §M5 deliverables the four required
-paths are: Difficulty-present happy path, Difficulty-missing fallback,
-Stage-missing silent skip, and idempotent replay. Additional coverage
-asserts the non-creation / non-Unit-issue filters short-circuit before
-any Jira call.
-
-Tests drive ``JiraClient`` through ``pytest-httpx``; the hidden
-``count_issues`` Jira search that ``has_been_applied`` performs is
-replaced by an injected async stub so tests don't need to mount the
-``/rest/api/3/search`` endpoint on every case.
+Covers ``rule1_unit_created`` (M5) and ``rule2_subtask_done`` (M6).
+Tests drive ``JiraClient`` through ``pytest-httpx``; the Jira search
+``count_issues`` performs for ``has_been_applied`` is mounted via a
+regex-matched response.
 """
 
 from __future__ import annotations
@@ -27,7 +21,7 @@ from tenacity import wait_none
 from runner.config import get_settings
 from runner.jira_client import JiraClient
 from runner.models import ChangelogEvent
-from runner.rules import UNIT_ISSUE_TYPES, rule1_unit_created
+from runner.rules import UNIT_ISSUE_TYPES, rule1_unit_created, rule2_subtask_done
 
 BASE_URL = "https://example.atlassian.net"
 _SEARCH_URL_RE = re.compile(r"https://example\.atlassian\.net/rest/api/3/search.*")
@@ -188,3 +182,245 @@ async def test_rule1_filters_out_non_unit_creation_events(
 def test_unit_issue_types_matches_spec() -> None:
     expected = frozenset({"Problem", "Concept", "Implementation", "Pattern", "Debug"})
     assert expected == UNIT_ISSUE_TYPES
+
+
+# ---------------------------------------------------------------------------
+# Rule 2 — Sub-task → Done dispatch (M6)
+# ---------------------------------------------------------------------------
+
+SUBTASK_KEY = "PROJ-99"
+NEW_SUBTASK_KEY = "PROJ-100"
+_R2_NOW = datetime.fromisoformat("2026-04-20T09:00:00+00:00")  # Monday
+
+
+def _subtask_payload(
+    *, work_type: str, outcome: str | None = None, parent_key: str = UNIT_KEY
+) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "summary": "Subtask",
+        "parent": {"key": parent_key},
+        "Work Type": {"value": work_type},
+    }
+    if outcome is not None:
+        fields["Outcome"] = {"value": outcome}
+    return {"key": SUBTASK_KEY, "fields": fields}
+
+
+def _unit_r2_payload(
+    *, stage: str, work_type: str, lifecycle: str, rev_done: int, rev_target: int
+) -> dict[str, Any]:
+    return {
+        "key": UNIT_KEY,
+        "fields": {
+            "summary": "Two Sum",
+            "Stage": {"value": stage},
+            "Work Type": {"value": work_type},
+            "Lifecycle": {"value": lifecycle},
+            "Revision Done": rev_done,
+            "Revision Target": rev_target,
+        },
+    }
+
+
+def _done_event(
+    *, eid: int = 55555, issuetype: str = "Sub-task", is_done: bool = True
+) -> ChangelogEvent:
+    return ChangelogEvent(
+        id=eid,
+        issue_key=SUBTASK_KEY,
+        created=datetime.fromisoformat("2026-04-20T09:00:00+00:00"),
+        issuetype=issuetype,
+        is_status_change_to_done=is_done,
+    )
+
+
+def _mock_r2_reads(httpx_mock: HTTPXMock, *, subtask: dict[str, Any], unit: dict[str, Any]) -> None:
+    httpx_mock.add_response(url=f"{BASE_URL}/rest/api/3/issue/{SUBTASK_KEY}", json=subtask)
+    httpx_mock.add_response(url=f"{BASE_URL}/rest/api/3/issue/{UNIT_KEY}", json=unit)
+
+
+def _mock_r2_writes(httpx_mock: HTTPXMock, *, create_subtask: bool = True) -> None:
+    if create_subtask:
+        httpx_mock.add_response(
+            url=f"{BASE_URL}/rest/api/3/issue",
+            method="POST",
+            json={"key": NEW_SUBTASK_KEY},
+        )
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue/{UNIT_KEY}", method="PUT", status_code=204
+    )
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue/{UNIT_KEY}/comment",
+        method="POST",
+        json={"id": "10099"},
+    )
+
+
+def _subtask_post_body(httpx_mock: HTTPXMock) -> dict[str, Any]:
+    post = next(
+        r for r in httpx_mock.get_requests() if r.method == "POST" and r.url.path.endswith("/issue")
+    )
+    body: dict[str, Any] = json.loads(post.content)["fields"]
+    return body
+
+
+def _put_body(httpx_mock: HTTPXMock) -> dict[str, Any]:
+    put = next(r for r in httpx_mock.get_requests() if r.method == "PUT")
+    body: dict[str, Any] = json.loads(put.content)["fields"]
+    return body
+
+
+@pytest.mark.anyio
+async def test_rule2_t2_learn_done_seeds_revise_one(httpx_mock: HTTPXMock) -> None:
+    _mock_r2_reads(
+        httpx_mock,
+        subtask=_subtask_payload(work_type="Learn"),
+        unit=_unit_r2_payload(
+            stage="Intermediate", work_type="Learn", lifecycle="Active", rev_done=0, rev_target=3
+        ),
+    )
+    _mock_no_replay(httpx_mock)
+    _mock_r2_writes(httpx_mock)
+    async with JiraClient() as client:
+        result = await rule2_subtask_done(_done_event(), client, run_id=1, now=_R2_NOW)
+    assert result == "T2"
+    body = _subtask_post_body(httpx_mock)
+    assert body["summary"] == "[Intermediate][Revise#1] \u2014 Two Sum"
+    assert body["duedate"] == "2026-04-22"  # Mon + 2bd = Wed
+    assert any(lbl.startswith("idem:") for lbl in body["labels"])
+    assert _put_body(httpx_mock)["Work Type"] == "Revise"
+
+
+@pytest.mark.anyio
+async def test_rule2_t3_revise_pass_advances_chain(httpx_mock: HTTPXMock) -> None:
+    _mock_r2_reads(
+        httpx_mock,
+        subtask=_subtask_payload(work_type="Revise", outcome="Pass"),
+        unit=_unit_r2_payload(
+            stage="Intermediate", work_type="Revise", lifecycle="Active", rev_done=1, rev_target=4
+        ),
+    )
+    _mock_no_replay(httpx_mock)
+    _mock_r2_writes(httpx_mock)
+    async with JiraClient() as client:
+        result = await rule2_subtask_done(_done_event(), client, run_id=1, now=_R2_NOW)
+    assert result == "T3"
+    body = _subtask_post_body(httpx_mock)
+    assert body["summary"] == "[Intermediate][Revise#3] \u2014 Two Sum"  # next index = k+1 = 3
+    # Mon (Apr 20) + Gap[3] = 11 business days → 2026-05-05 (Tue)
+    assert body["duedate"] == "2026-05-05"
+    assert _put_body(httpx_mock)["Revision Done"] == 2
+
+
+@pytest.mark.anyio
+async def test_rule2_t4_auto_pauses_at_target(httpx_mock: HTTPXMock) -> None:
+    _mock_r2_reads(
+        httpx_mock,
+        subtask=_subtask_payload(work_type="Revise", outcome="Pass"),
+        unit=_unit_r2_payload(
+            stage="Advanced", work_type="Revise", lifecycle="Active", rev_done=2, rev_target=3
+        ),
+    )
+    _mock_no_replay(httpx_mock)
+    _mock_r2_writes(httpx_mock, create_subtask=False)
+    async with JiraClient() as client:
+        result = await rule2_subtask_done(_done_event(), client, run_id=1, now=_R2_NOW)
+    assert result == "T4"
+    # No successor Sub-task is created on T4.
+    assert not any(
+        r.method == "POST" and r.url.path.endswith("/issue") for r in httpx_mock.get_requests()
+    )
+    put = _put_body(httpx_mock)
+    assert put["Revision Done"] == 3
+    assert put["Lifecycle"] == "Paused"
+    assert "Paused At" in put
+
+
+@pytest.mark.anyio
+async def test_rule2_t12_revise_regress_resets_chain(httpx_mock: HTTPXMock) -> None:
+    _mock_r2_reads(
+        httpx_mock,
+        subtask=_subtask_payload(work_type="Revise", outcome="Regress"),
+        unit=_unit_r2_payload(
+            stage="Beginner", work_type="Revise", lifecycle="Active", rev_done=2, rev_target=4
+        ),
+    )
+    _mock_no_replay(httpx_mock)
+    _mock_r2_writes(httpx_mock)
+    async with JiraClient() as client:
+        result = await rule2_subtask_done(_done_event(), client, run_id=1, now=_R2_NOW)
+    assert result == "T12"
+    body = _subtask_post_body(httpx_mock)
+    assert body["summary"] == "[Beginner][Revise#1] \u2014 Two Sum"
+    assert body["duedate"] == "2026-04-22"  # reset to Gap[1] = 2bd
+    assert _put_body(httpx_mock)["Revision Done"] == 0
+
+
+@pytest.mark.anyio
+async def test_rule2_t13_test_regress_switches_worktype(httpx_mock: HTTPXMock) -> None:
+    _mock_r2_reads(
+        httpx_mock,
+        subtask=_subtask_payload(work_type="Test", outcome="Regress"),
+        unit=_unit_r2_payload(
+            stage="Intermediate", work_type="Learn", lifecycle="Active", rev_done=0, rev_target=3
+        ),
+    )
+    _mock_no_replay(httpx_mock)
+    _mock_r2_writes(httpx_mock)
+    async with JiraClient() as client:
+        result = await rule2_subtask_done(_done_event(), client, run_id=1, now=_R2_NOW)
+    assert result == "T13"
+    body = _subtask_post_body(httpx_mock)
+    assert body["summary"] == "[Intermediate][Revise#1] \u2014 Two Sum"
+    put = _put_body(httpx_mock)
+    assert put["Work Type"] == "Revise"
+    assert put["Revision Done"] == 0
+
+
+@pytest.mark.anyio
+async def test_rule2_test_pass_is_noop(httpx_mock: HTTPXMock) -> None:
+    _mock_r2_reads(
+        httpx_mock,
+        subtask=_subtask_payload(work_type="Test", outcome="Pass"),
+        unit=_unit_r2_payload(
+            stage="Beginner", work_type="Learn", lifecycle="Active", rev_done=0, rev_target=2
+        ),
+    )
+    async with JiraClient() as client:
+        result = await rule2_subtask_done(_done_event(), client, run_id=1, now=_R2_NOW)
+    assert result is None
+    assert not any(r.method in {"POST", "PUT"} for r in httpx_mock.get_requests())
+
+
+@pytest.mark.anyio
+async def test_rule2_replay_is_noop(httpx_mock: HTTPXMock) -> None:
+    _mock_r2_reads(
+        httpx_mock,
+        subtask=_subtask_payload(work_type="Revise", outcome="Pass"),
+        unit=_unit_r2_payload(
+            stage="Intermediate", work_type="Revise", lifecycle="Active", rev_done=1, rev_target=4
+        ),
+    )
+    httpx_mock.add_response(
+        url=_SEARCH_URL_RE, json={"total": 1, "issues": [{"key": NEW_SUBTASK_KEY}]}
+    )
+    async with JiraClient() as client:
+        result = await rule2_subtask_done(_done_event(), client, run_id=1, now=_R2_NOW)
+    assert result is None
+    assert not any(r.method in {"POST", "PUT"} for r in httpx_mock.get_requests())
+
+
+@pytest.mark.parametrize(
+    ("is_done", "issuetype"),
+    [(False, "Sub-task"), (True, "Problem"), (True, "Epic")],
+)
+@pytest.mark.anyio
+async def test_rule2_filters_non_subtask_done_events(
+    is_done: bool, issuetype: str, httpx_mock: HTTPXMock
+) -> None:
+    async with JiraClient() as client:
+        result = await rule2_subtask_done(
+            _done_event(is_done=is_done, issuetype=issuetype), client, run_id=1, now=_R2_NOW
+        )
+    assert result is None
+    assert httpx_mock.get_requests() == []
