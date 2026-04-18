@@ -176,3 +176,49 @@ class JiraClient:
         )
         result: dict[str, Any] = response.json()
         return result
+
+    async def create_subtask(
+        self,
+        *,
+        parent_key: str,
+        summary: str,
+        labels: list[str],
+        story_points: int | None = None,
+        extra_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a ``Sub-task`` under ``parent_key`` and return the Jira payload.
+
+        ``labels`` must include the ``idem:<hex>`` tag per §5.3 so the
+        created Subtask is replay-identifiable. ``extra_fields`` is
+        merged last and can override any field the runner sets by
+        default; intended for per-rule additions (Work Type, Due Date)
+        from ``runner.rules``.
+        """
+        from runner.config import get_settings as _get_settings
+
+        project_key = _get_settings().jira_project_key
+        fields: dict[str, Any] = {
+            "project": {"key": project_key},
+            "parent": {"key": parent_key},
+            "summary": summary,
+            "issuetype": {"name": "Sub-task"},
+            "labels": list(labels),
+        }
+        if story_points is not None:
+            fields["Story Points"] = story_points
+        if extra_fields:
+            fields.update(extra_fields)
+        response = await self._request("POST", "/rest/api/3/issue", json={"fields": fields})
+        result: dict[str, Any] = response.json()
+        return result
+
+    async def update_issue(self, issue_key: str, fields: dict[str, Any]) -> None:
+        """Edit ``issue_key`` with the supplied ``fields`` payload.
+
+        Wraps ``PUT /rest/api/3/issue/{key}``; returns ``None`` on the
+        Jira 204 success. Raises ``httpx.HTTPStatusError`` on 4xx. Field
+        names must match the site's Jira schema; mapping of display
+        names (``Revision Target``) to ``customfield_XXXXX`` IDs is the
+        caller's responsibility until the M8 bootstrap lands.
+        """
+        await self._request("PUT", f"/rest/api/3/issue/{issue_key}", json={"fields": fields})
