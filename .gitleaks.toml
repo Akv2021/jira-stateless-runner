@@ -43,6 +43,14 @@ keywords = ["atlassian.net"]
 [allowlist]
 description = "Paths, patterns, and stopwords excluded from secret scanning"
 
+# Match allowlist regexes against the full line rather than just the redacted
+# secret fragment. This is required so prefix-bearing patterns (e.g. the
+# ``idem_<hex>`` audit-comment token and ``${{ secrets.X }}`` references) can
+# be disambiguated from bare high-entropy strings. All existing regexes below
+# continue to work unchanged: the placeholder hostnames and secret-reference
+# syntaxes they match appear verbatim on the source line.
+regexTarget = "line"
+
 # Path regexes — matched against the repo-relative file path.
 paths = [
     # Internal planning documents are gitignored; this allowlist is defence-in-
@@ -54,20 +62,27 @@ paths = [
     '''^(poetry|uv|Pipfile|package-lock|yarn)\.lock$''',
 ]
 
-# Secret-content regexes — when the matched secret text matches one of these,
-# the hit is suppressed.
+# Line-content regexes — when the source line matches one of these, any hit
+# on that line is suppressed (see ``regexTarget`` above).
 regexes = [
     # Placeholder hostnames commonly appearing in docs, READMEs, and examples.
     '''<yoursite>\.atlassian\.net''',
     '''<your[-_]?site>\.atlassian\.net''',
     '''example\.atlassian\.net''',
     '''your[-_]?org\.atlassian\.net''',
+    '''your[-_]?site\.atlassian\.net''',
+    '''acme\.atlassian\.net''',
     # GitHub Actions Secret-reference syntax — the CORRECT way to reference
     # JIRA_TOKEN and friends in workflow YAML.
     '''\$\{\{\s*secrets\.[A-Z_]+\s*\}\}''',
     '''\{\{\s*secrets\.[A-Z_]+\s*\}\}''',
     # Shell-style environment-variable interpolation (safe references).
     '''\$\{?[A-Z_][A-Z0-9_]*\}?''',
+    # Idempotency-key tokens (runner/idempotency.py): 12-hex digest of
+    # sha256(unit|event|transition). Display form ``idem_<hex>`` in §5.2
+    # audit comments; Jira-label form ``idem:<hex>`` in JQL and labels.
+    # Not a credential — appears in-repo only in spec docstrings and fixtures.
+    '''idem[_:][0-9a-f]{12}''',
 ]
 
 # Stopwords — if any of these substrings appear (case-insensitive) inside a
