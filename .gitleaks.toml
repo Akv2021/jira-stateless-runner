@@ -1,0 +1,87 @@
+# jira-stateless-runner — gitleaks configuration
+#
+# Enforces the credential-handling mandate in docs/ExternalRunner.md §8.2:
+# JIRA_BASE_URL, JIRA_EMAIL, and JIRA_TOKEN are stored EXCLUSIVELY in GitHub
+# Secrets; this config prevents accidental commitment of literal values.
+#
+# Invocation surfaces:
+#   - pre-commit hook (see .pre-commit-config.yaml) — runs `gitleaks detect --redact`
+#   - CI step in .github/workflows/ci.yml — runs before `pip install -e '.[dev]'`
+#   - local manual: `gitleaks detect --redact --config .gitleaks.toml`
+
+title = "jira-stateless-runner gitleaks config"
+
+# Inherit gitleaks' built-in rule set (AWS keys, GitHub tokens, private keys,
+# generic-api-key, Slack, Stripe, JWT, etc.). Custom rules below augment —
+# never replace — the defaults.
+[extend]
+useDefault = true
+
+# --- Jira / Atlassian specific rules ------------------------------------------
+
+[[rules]]
+id = "jira-atlassian-token-assignment"
+description = "Jira/Atlassian token assigned a literal value (must reference GitHub Secrets)"
+regex = '''(?i)(?:jira|atlassian)[_-]?(?:token|api[_-]?key|password)\s*[:=]\s*['"]?([A-Za-z0-9+/=_\-]{16,})['"]?'''
+secretGroup = 1
+keywords = ["jira", "atlassian"]
+
+[[rules]]
+id = "atlassian-basic-auth-pair"
+description = "Email + opaque-token basic-auth pair (Jira REST credential format)"
+regex = '''(?i)[\w.+\-]+@[\w.\-]+\.[a-z]{2,10}:[A-Za-z0-9+/=_\-]{20,}'''
+keywords = ["@"]
+
+[[rules]]
+id = "atlassian-hardcoded-site-url"
+description = "Hardcoded Atlassian Cloud site URL — must come from the JIRA_BASE_URL secret"
+regex = '''https?://[a-z0-9][a-z0-9\-]{2,60}\.atlassian\.net'''
+keywords = ["atlassian.net"]
+
+# --- Global allowlist ---------------------------------------------------------
+
+[allowlist]
+description = "Paths, patterns, and stopwords excluded from secret scanning"
+
+# Path regexes — matched against the repo-relative file path.
+paths = [
+    # Internal planning documents are gitignored; this allowlist is defence-in-
+    # depth in case docs/ is ever staged accidentally (e.g., `git add -f`).
+    '''^docs/''',
+    # This file itself contains regexes that can match themselves.
+    '''^\.gitleaks\.toml$''',
+    # Lock files carry long hash-like strings that trigger generic-api-key FPs.
+    '''^(poetry|uv|Pipfile|package-lock|yarn)\.lock$''',
+]
+
+# Secret-content regexes — when the matched secret text matches one of these,
+# the hit is suppressed.
+regexes = [
+    # Placeholder hostnames commonly appearing in docs, READMEs, and examples.
+    '''<yoursite>\.atlassian\.net''',
+    '''<your[-_]?site>\.atlassian\.net''',
+    '''example\.atlassian\.net''',
+    '''your[-_]?org\.atlassian\.net''',
+    # GitHub Actions Secret-reference syntax — the CORRECT way to reference
+    # JIRA_TOKEN and friends in workflow YAML.
+    '''\$\{\{\s*secrets\.[A-Z_]+\s*\}\}''',
+    '''\{\{\s*secrets\.[A-Z_]+\s*\}\}''',
+    # Shell-style environment-variable interpolation (safe references).
+    '''\$\{?[A-Z_][A-Z0-9_]*\}?''',
+]
+
+# Stopwords — if any of these substrings appear (case-insensitive) inside a
+# matched secret, the hit is suppressed as an obvious placeholder.
+stopwords = [
+    "example",
+    "sample",
+    "placeholder",
+    "dummy",
+    "your_token",
+    "your-token",
+    "your_api_key",
+    "your-api-key",
+    "changeme",
+    "xxxxx",
+    "redacted",
+]
