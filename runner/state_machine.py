@@ -7,10 +7,7 @@ dispatch rule, and returns a TransitionID (T2/T3/T4/T12/T13) or the
 sentinel "NOOP" for dangling / Test-Pass maintenance rows. Zero I/O,
 zero side-effects. The 23-row decision matrix is authored in
 ImplementationTestMatrix.md §3 and verified by the parametric test suite
-in tests/test_state_machine.py (M1).
-
-M1 asserts 23 RED cases against the ``NotImplementedError`` raised here;
-M2 replaces the body with the normative ``match/case`` dispatch table.
+in tests/test_state_machine.py.
 """
 
 from __future__ import annotations
@@ -80,9 +77,20 @@ def dispatch(
 
     Returns one of T2, T3, T4, T12, T13, or "NOOP". Pure — no I/O, no
     logging, no mutation of inputs.
-
-    Raises:
-        NotImplementedError: M1 stub; the parametric suite asserts this
-            is raised on all 23 matrix rows before M2 replaces the body.
     """
-    raise NotImplementedError("state_machine.dispatch() — M1 RED-baseline; implemented in M2")
+    key = (s_work_type, u_lifecycle, u_work_type, s_outcome)
+    match key:
+        case ("Revise", "Active", "Revise", "Regress"):
+            return "T12"
+        case ("Test", "Active", _, "Regress"):
+            return "T13"
+        case ("Learn", "Active", "Learn", _):
+            return "T2"
+        case ("Revise", "Active", "Revise", "Pass"):
+            if revision_done + 1 < revision_target:
+                return "T3"
+            if revision_done + 1 == revision_target:
+                return "T4"
+            return "NOOP"
+        case _:
+            return "NOOP"
