@@ -62,6 +62,8 @@ regexes = [
     '''<your[-_]?site>\.atlassian\.net''',
     '''example\.atlassian\.net''',
     '''your[-_]?org\.atlassian\.net''',
+    '''your[-_]?site\.atlassian\.net''',
+    '''acme\.atlassian\.net''',
     # GitHub Actions Secret-reference syntax — the CORRECT way to reference
     # JIRA_TOKEN and friends in workflow YAML.
     '''\$\{\{\s*secrets\.[A-Z_]+\s*\}\}''',
