@@ -1,6 +1,6 @@
 """Dead-man's-switch state machine.
 
-Per docs/ExternalRunner.md §6.3–§6.4:
+Per docs/ExternalRunner.md §6.3-§6.4:
 
 - ``with_health_tracking`` decorator increments ``consecutive_failures`` on raise.
 - Crossing threshold → ``open_alert()`` via ``gh issue create``.

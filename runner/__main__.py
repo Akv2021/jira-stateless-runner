@@ -6,7 +6,7 @@ Subcommands map to the three scheduled workflows in docs/ExternalRunner.md §4:
 - ``stale``  → Rule 4 / T9 (Monday 10:00 via stale-scan.yml)
 - ``health`` → dead-man's-switch (every 6 hours via healthcheck.yml)
 
-Implementation lands in later milestones (M5–M9).
+Implementation lands in later milestones (M5-M9).
 """
 
 from __future__ import annotations

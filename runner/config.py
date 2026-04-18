@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Final
 
-
 RevisionGap: Final[list[int]] = [2, 5, 11, 25]
 """Revise#k due-date offsets in business days.
 
