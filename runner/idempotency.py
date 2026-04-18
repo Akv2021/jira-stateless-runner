@@ -19,8 +19,23 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Awaitable, Callable
+from typing import Protocol
 
-from runner.models import TransitionID, Unit
+from runner.models import TransitionID
+
+
+class HasIssueKey(Protocol):
+    """Minimal structural contract for replay-safety lookups.
+
+    The idempotency helpers only read ``.key`` off their unit argument,
+    so any object exposing a string ``key`` attribute — the full
+    ``runner.models.Unit`` model or the lightweight stub constructed in
+    ``runner.rules`` — is accepted.
+    """
+
+    @property
+    def key(self) -> str: ...
+
 
 IDEM_LABEL_NAMESPACE = "idem"
 """Jira-label prefix for the idempotency key (separator ``:``)."""
@@ -59,12 +74,12 @@ def display_for(key: str) -> str:
     return f"{IDEM_DISPLAY_PREFIX}{key}"
 
 
-def replay_jql(unit: Unit, key: str) -> str:
+def replay_jql(unit: HasIssueKey, key: str) -> str:
     """Return the JQL that locates Subtasks of ``unit`` carrying ``idem:<key>``."""
     return f'parent = "{unit.key}" AND labels = "{label_for(key)}"'
 
 
-async def has_been_applied(unit: Unit, key: str, count: CountFn) -> bool:
+async def has_been_applied(unit: HasIssueKey, key: str, count: CountFn) -> bool:
     """Return True if a Subtask under ``unit`` already carries ``idem:<key>``.
 
     The ``count`` callable is expected to execute ``replay_jql(unit,
@@ -81,6 +96,7 @@ __all__ = [
     "IDEM_DISPLAY_PREFIX",
     "IDEM_LABEL_NAMESPACE",
     "CountFn",
+    "HasIssueKey",
     "compute_key",
     "display_for",
     "has_been_applied",
