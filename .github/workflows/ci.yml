@@ -75,4 +75,15 @@ jobs:
         run: mypy runner tests
 
       - name: Run tests (pytest)
-        run: pytest
+        # Exit code 5 = "no tests collected" — tolerated ONLY at the M0
+        # baseline where tests/ is intentionally empty. Once M1 lands the
+        # 23-row parametric suite this fallthrough is dead code; the
+        # tolerance stays as a defensive no-op.
+        run: |
+          set +e
+          pytest
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 5 ]; then
+            exit "$rc"
+          fi
