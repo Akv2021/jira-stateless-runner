@@ -20,7 +20,7 @@ from pytest_httpx import HTTPXMock
 from tenacity import wait_none
 
 from runner.config import get_settings
-from runner.jira_client import JiraClient
+from runner.jira_client import IssueNotFoundError, JiraClient
 
 BASE_URL = "https://example.atlassian.net"
 ISSUE_KEY = "PROJ-1"
@@ -73,6 +73,11 @@ async def test_basic_auth_header_shape(httpx_mock: HTTPXMock) -> None:
     assert request.headers["Authorization"] == expected
 
 
+def _issue_requests(httpx_mock: HTTPXMock) -> list[httpx.Request]:
+    """Return only the requests against ``ISSUE_URL`` (drops field-map noise)."""
+    return [r for r in httpx_mock.get_requests() if str(r.url).startswith(ISSUE_URL)]
+
+
 @pytest.mark.anyio
 async def test_retries_on_5xx_then_succeeds(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(url=ISSUE_URL, status_code=503)
@@ -81,7 +86,7 @@ async def test_retries_on_5xx_then_succeeds(httpx_mock: HTTPXMock) -> None:
     async with JiraClient() as client:
         result = await client.get_issue(ISSUE_KEY)
     assert result == ISSUE_PAYLOAD
-    assert len(httpx_mock.get_requests()) == 3
+    assert len(_issue_requests(httpx_mock)) == 3
 
 
 @pytest.mark.anyio
@@ -91,7 +96,7 @@ async def test_retries_on_429_then_succeeds(httpx_mock: HTTPXMock) -> None:
     async with JiraClient() as client:
         result = await client.get_issue(ISSUE_KEY)
     assert result == ISSUE_PAYLOAD
-    assert len(httpx_mock.get_requests()) == 2
+    assert len(_issue_requests(httpx_mock)) == 2
 
 
 @pytest.mark.anyio
@@ -101,17 +106,20 @@ async def test_no_retry_on_401_unauthorized(httpx_mock: HTTPXMock) -> None:
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
             await client.get_issue(ISSUE_KEY)
     assert exc_info.value.response.status_code == 401
-    assert len(httpx_mock.get_requests()) == 1
+    assert len(_issue_requests(httpx_mock)) == 1
 
 
 @pytest.mark.anyio
 async def test_no_retry_on_404_not_found(httpx_mock: HTTPXMock) -> None:
+    # 404 is translated to IssueNotFoundError per ExternalRunner.md §6.1 so
+    # rule handlers can swallow the deleted-mid-flight case without hitting
+    # the retry policy or the generic HTTPStatusError alerting path.
     httpx_mock.add_response(url=ISSUE_URL, status_code=404)
     async with JiraClient() as client:
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        with pytest.raises(IssueNotFoundError) as exc_info:
             await client.get_issue(ISSUE_KEY)
-    assert exc_info.value.response.status_code == 404
-    assert len(httpx_mock.get_requests()) == 1
+    assert ISSUE_KEY in exc_info.value.path
+    assert len(_issue_requests(httpx_mock)) == 1
 
 
 @pytest.mark.anyio
@@ -162,3 +170,129 @@ async def test_post_comment_wraps_text_in_adf(httpx_mock: HTTPXMock) -> None:
     texts = [node.get("text") for node in paragraph["content"] if node["type"] == "text"]
     assert texts == ["line1", "line2"]
     assert any(node["type"] == "hardBreak" for node in paragraph["content"])
+
+
+# ---------------------------------------------------------------------------
+# M8 field-discovery bootstrap — get_field_map + display-name translation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_get_field_map_builds_name_to_id_dict(httpx_mock: HTTPXMock) -> None:
+    async with JiraClient() as client:
+        mapping = await client.get_field_map()
+    # The autouse field-map fixture in conftest.py supplies the mock
+    # response; the resolver turns it into a plain {name: id} dict.
+    assert mapping["Revision Target"] == "customfield_10105"
+    assert mapping["Last Processed Changelog Id"] == "customfield_10144"
+
+
+@pytest.mark.anyio
+async def test_get_field_map_is_cached_per_client(httpx_mock: HTTPXMock) -> None:
+    async with JiraClient() as client:
+        await client.get_field_map()
+        await client.get_field_map()
+        await client.get_field_map()
+    field_calls = [r for r in httpx_mock.get_requests() if r.url.path.endswith("/rest/api/3/field")]
+    assert len(field_calls) == 1
+
+
+@pytest.mark.anyio
+async def test_update_issue_translates_display_names_to_ids(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=ISSUE_URL, method="PUT", status_code=204)
+    async with JiraClient() as client:
+        await client.update_issue(ISSUE_KEY, {"Revision Target": 3, "summary": "new"})
+    put = next(r for r in httpx_mock.get_requests() if r.method == "PUT")
+    import json as _json
+
+    body = _json.loads(put.content)["fields"]
+    # Custom field rewritten to its ID; system field passes through.
+    assert body == {"customfield_10105": 3, "summary": "new"}
+
+
+@pytest.mark.anyio
+async def test_create_subtask_translates_extra_fields(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue", method="POST", json={"key": "PROJ-43"}
+    )
+    async with JiraClient() as client:
+        await client.create_subtask(
+            parent_key="PROJ-42",
+            summary="child",
+            labels=["idem:abc"],
+            story_points=2,
+            extra_fields={"Work Type": "Revise", "duedate": "2026-04-22"},
+        )
+    post = next(
+        r for r in httpx_mock.get_requests() if r.method == "POST" and r.url.path.endswith("/issue")
+    )
+    import json as _json
+
+    body = _json.loads(post.content)["fields"]
+    assert body["customfield_10102"] == "Revise"  # Work Type -> custom
+    assert body["customfield_10111"] == 2  # Story Points -> custom
+    assert body["duedate"] == "2026-04-22"  # system field, unchanged
+    assert body["summary"] == "child"
+    assert body["parent"] == {"key": "PROJ-42"}
+
+
+@pytest.mark.anyio
+async def test_get_issue_rewrites_custom_field_ids_to_display_names(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Real Jira returns ``customfield_XXXXX`` keys; the client rewrites them.
+
+    Regression for the M8 read-side translation (docs/ExternalRunner.md
+    §3.2): ``runner.rules`` addresses fields by display name, so the
+    client must inverse-map every known ID on the way out. System fields
+    (absent from the field-map) pass through unchanged.
+    """
+    httpx_mock.add_response(
+        url=ISSUE_URL,
+        json={
+            "key": ISSUE_KEY,
+            "fields": {
+                "summary": "system-field stays",  # system field, passes through
+                "customfield_10100": {"value": "Intermediate"},  # Stage
+                "customfield_10104": 2,  # Revision Done
+                "customfield_99999": "unknown",  # unmapped ID also passes through
+            },
+        },
+    )
+    async with JiraClient() as client:
+        payload = await client.get_issue(ISSUE_KEY)
+    fields = payload["fields"]
+    assert fields["Stage"] == {"value": "Intermediate"}
+    assert fields["Revision Done"] == 2
+    assert fields["summary"] == "system-field stays"
+    assert fields["customfield_99999"] == "unknown"
+
+
+@pytest.mark.anyio
+async def test_search_issues_rewrites_custom_field_ids_to_display_names(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """``search_issues`` applies the same inverse map as ``get_issue`` per-issue."""
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/search/jql",
+        method="POST",
+        json={
+            "issues": [
+                {
+                    "key": "PROJ-7",
+                    "fields": {
+                        "summary": "pass-through",
+                        "customfield_10102": {"value": "Learn"},  # Work Type
+                        "customfield_10110": True,  # Has Had Test
+                    },
+                }
+            ]
+        },
+    )
+    async with JiraClient() as client:
+        issues = await client.search_issues("project = PROJ")
+    assert len(issues) == 1
+    fields = issues[0]["fields"]
+    assert fields["Work Type"] == {"value": "Learn"}
+    assert fields["Has Had Test"] is True
+    assert fields["summary"] == "pass-through"

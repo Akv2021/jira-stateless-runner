@@ -25,6 +25,7 @@ from runner.health import (
     record_success,
     save_state,
 )
+from runner.jira_client import IssueNotFoundError
 
 
 def _http_error(status: int) -> httpx.HTTPStatusError:
@@ -38,6 +39,8 @@ def _http_error(status: int) -> httpx.HTTPStatusError:
     [
         (_http_error(401), "http_401"),
         (_http_error(403), "http_401"),
+        (_http_error(404), "not_found"),
+        (IssueNotFoundError("/rest/api/3/issue/PROJ-1"), "not_found"),
         (_http_error(429), "http_429"),
         (_http_error(503), "http_5xx"),
         (httpx.ConnectError("down"), "http_5xx"),
@@ -46,6 +49,17 @@ def _http_error(status: int) -> httpx.HTTPStatusError:
 )
 def test_classify_maps_exception_to_kind(exc: BaseException, expected: str) -> None:
     assert classify(exc) == expected
+
+
+def test_record_failure_not_found_never_opens_alert() -> None:
+    """§6.1: user-deleted issues are not alert-worthy regardless of frequency."""
+    state = HealthState()
+    for _ in range(20):
+        should_open = record_failure(state, IssueNotFoundError("/rest/api/3/issue/PROJ-9"))
+        assert should_open is False
+    assert state.last_failure_kind == "not_found"
+    assert state.consecutive_failures == 20
+    assert state.consecutive_failures < THRESHOLDS["not_found"]
 
 
 def test_record_success_resets_counters() -> None:

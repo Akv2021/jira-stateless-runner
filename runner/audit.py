@@ -100,4 +100,41 @@ async def post(unit_key: str, event: TransitionEvent, client: JiraClient) -> Non
     await client.post_comment(unit_key, body)
 
 
-__all__ = ["TransitionEvent", "format_comment", "post"]
+def _flatten_adf(body: object) -> str:
+    """Flatten a Jira ADF body into a single plain-text string.
+
+    Used by ``comment_exists`` to locate the ``key: idem_<hex>`` marker
+    embedded in the §5.2 footer line. Walks the ADF tree recursively and
+    concatenates every ``text`` node; non-text nodes contribute nothing.
+    """
+    if isinstance(body, str):
+        return body
+    if isinstance(body, dict):
+        parts: list[str] = []
+        text = body.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+        content = body.get("content")
+        if isinstance(content, list):
+            parts.append(_flatten_adf(content))
+        return " ".join(p for p in parts if p)
+    if isinstance(body, list):
+        return " ".join(filter(None, (_flatten_adf(c) for c in body)))
+    return ""
+
+
+async def comment_exists(unit_key: str, idem_key: str, client: JiraClient) -> bool:
+    """Return True if an audit comment carrying ``idem_key`` is on ``unit_key``.
+
+    Implements the §6.6 row 3→4 detection: fetches all comments on the
+    Unit, flattens each ADF body to plain text, and checks for the
+    canonical ``display_for(idem_key)`` marker (``idem_<hex>``). Callers
+    use the result to decide whether to re-post the audit comment on a
+    replay whose field writes + Subtask creation already succeeded.
+    """
+    marker = display_for(idem_key)
+    comments = await client.list_comments(unit_key)
+    return any(marker in _flatten_adf(comment.get("body")) for comment in comments)
+
+
+__all__ = ["TransitionEvent", "comment_exists", "format_comment", "post"]

@@ -101,6 +101,17 @@ class StructuredFormatter(logging.Formatter):
             if key in _RESERVED_LOG_ATTRS or key.startswith("_"):
                 continue
             payload[key] = value
+        # Non-INFO records carry the traceback as structured fields so
+        # CI log viewers surface the cause without a raw Python stack
+        # frame in the JSON stream. INFO stays untouched to preserve the
+        # §8.3 privacy allow-list.
+        if record.exc_info and record.levelno != logging.INFO:
+            exc_type, exc_value, _tb = record.exc_info
+            if exc_type is not None:
+                payload["exc_type"] = exc_type.__name__
+            if exc_value is not None:
+                payload["exc_message"] = str(exc_value)
+            payload["exc_traceback"] = self.formatException(record.exc_info)
         return payload
 
 

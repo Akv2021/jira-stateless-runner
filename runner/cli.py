@@ -117,6 +117,14 @@ async def _health() -> None:
     async with JiraClient() as client:
         state = await watermark.read(client, settings.jira_project_key)
     stamp = state.last_successful_poll_at
+    # Cold-start no-op: the System Config has never been written to
+    # (neither `Last Successful Poll At` nor `Runner Version` is set).
+    # There is no poll history to watchdog yet, so the healthcheck
+    # succeeds silently -- alerting here would trip on every M11 D.1
+    # dry-run before the first successful poll completes.
+    if stamp is None and state.runner_version is None:
+        _LOG.info("healthcheck_cold_start", extra={"unit": state.issue_key})
+        return
     if stamp is None:
         raise RuntimeError("No Last Successful Poll At -- poll-dispatch has never succeeded")
     last = datetime.fromisoformat(stamp.replace("Z", "+00:00"))

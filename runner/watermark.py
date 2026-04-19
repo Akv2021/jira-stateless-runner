@@ -101,7 +101,12 @@ async def find_system_config_issue(client: JiraClient, project_key: str) -> str:
 
 
 async def read(client: JiraClient, project_key: str) -> WatermarkState:
-    """Return the persisted watermark tuple for ``project_key`` (§3.4)."""
+    """Return the persisted watermark tuple for ``project_key`` (§3.4).
+
+    ``JiraClient.get_issue`` rewrites ``customfield_XXXXX`` IDs to
+    display names on the way out (M8 read-side translation), so the
+    watermark fields are addressed here by their human-readable names.
+    """
     key = await find_system_config_issue(client, project_key)
     payload = await client.get_issue(key)
     raw_id = _read_scalar(payload, WATERMARK_FIELD_ID)
