@@ -53,6 +53,21 @@ SUBTASK_ISSUE_TYPE: Final[str] = "Sub-task"
 _FALLBACK_NOTE: Final[str] = "Difficulty missing at creation; RevisionTarget defaulted to 2 (Easy)."
 """§4.1 audit-comment addendum emitted when the Difficulty fallback fires."""
 
+STALE_ELIGIBLE_FILTER: Final[str] = "IP-Stale-Eligible"
+"""Saved Jira filter name provisioned in Phase 1.A.5 (JiraImplementation.md §9.2).
+
+Rule 4 runs the Solo-profile version of this filter (``Has Had Test =
+false``); the runner references it by name via ``filter = "X"`` JQL so
+tuning happens in Jira without code changes.
+"""
+
+HAS_HAD_TEST_FIELD: Final[str] = "Has Had Test"
+"""Durable lifetime-idempotency Boolean set once by T9 (§5.3, §9.2).
+
+Set-once-never-cleared: T5/T11 upgrade, T7 Archive, T13 Regress all
+leave the flag intact so a Unit never re-enters the stale-scan pool.
+"""
+
 
 def _read_field(payload: dict[str, Any], name: str) -> Any:
     """Return ``payload["fields"][name]`` or ``None`` if absent.
@@ -407,9 +422,80 @@ async def rule2_subtask_done(
     return transition
 
 
+async def rule4_stale_scan(
+    client: JiraClient,
+    *,
+    run_id: int,
+    now: datetime | None = None,
+    filter_name: str = STALE_ELIGIBLE_FILTER,
+) -> list[str]:
+    """Fire T9 for every Unit matching ``IP-Stale-Eligible`` (ExternalRunner.md §4.2).
+
+    Returns the list of parent Unit keys for which a Test Sub-task was
+    created this run. Lifetime idempotency is enforced by the
+    ``Has Had Test = true`` clause baked into the saved filter (§9.2):
+    once Rule 4 sets the flag, the Unit drops out of the candidate pool
+    permanently and a second scan on the same calendar is a no-op.
+    Rule 4 never writes tuple fields per §4.2.
+    """
+    stamp = now if now is not None else _utc_now()
+    due = _add_business_days(stamp.date(), RevisionGap[0])
+    jql = f'filter = "{filter_name}"'
+    candidates = await client.search_issues(
+        jql, fields=["summary", "Stage", HAS_HAD_TEST_FIELD], max_results=50
+    )
+    processed: list[str] = []
+    for payload in candidates:
+        unit_key = payload.get("key")
+        if not isinstance(unit_key, str):
+            continue
+        stage = _option_str(payload, "Stage")
+        if stage is None:
+            continue
+        summary = _summary(payload)
+        # T9 idempotency is deterministic on unit_key alone (not run_id)
+        # so retries after partial failure re-use the same idem label and
+        # short-circuit via has_been_applied instead of creating a
+        # duplicate Test subtask (§6.6 row 1->2 recovery).
+        key = idempotency.compute_key(unit_key, "stale-scan", "T9")
+        if await idempotency.has_been_applied(_UnitRef(unit_key), key, client.count_issues):
+            continue
+        await client.create_subtask(
+            parent_key=unit_key,
+            summary=f"[{stage}][Test] \u2014 {summary}".strip(),
+            labels=["test", idempotency.label_for(key)],
+            story_points=2,
+            extra_fields={"duedate": due.isoformat(), "Work Type": "Test"},
+        )
+        await client.update_issue(unit_key, {HAS_HAD_TEST_FIELD: True})
+        await audit.post(
+            unit_key,
+            TransitionEvent(
+                transition_id="T9",
+                source_label="StaleScan",
+                target_label="Test",
+                revision_done_pre=0,
+                revision_done_post=0,
+                revision_target=0,
+                run_id=run_id,
+                event_id=f"stale-{run_id}",
+                key=key,
+                due_date=due,
+                gap_index=0,
+                gap_bd=RevisionGap[0],
+            ),
+            client,
+        )
+        processed.append(unit_key)
+    return processed
+
+
 __all__ = [
+    "HAS_HAD_TEST_FIELD",
+    "STALE_ELIGIBLE_FILTER",
     "SUBTASK_ISSUE_TYPE",
     "UNIT_ISSUE_TYPES",
     "rule1_unit_created",
     "rule2_subtask_done",
+    "rule4_stale_scan",
 ]
