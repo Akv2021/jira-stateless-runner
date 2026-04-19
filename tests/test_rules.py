@@ -21,7 +21,14 @@ from tenacity import wait_none
 from runner.config import get_settings
 from runner.jira_client import JiraClient
 from runner.models import ChangelogEvent
-from runner.rules import UNIT_ISSUE_TYPES, rule1_unit_created, rule2_subtask_done
+from runner.rules import (
+    HAS_HAD_TEST_FIELD,
+    STALE_ELIGIBLE_FILTER,
+    UNIT_ISSUE_TYPES,
+    rule1_unit_created,
+    rule2_subtask_done,
+    rule4_stale_scan,
+)
 
 BASE_URL = "https://example.atlassian.net"
 _SEARCH_URL_RE = re.compile(r"https://example\.atlassian\.net/rest/api/3/search.*")
@@ -424,3 +431,109 @@ async def test_rule2_filters_non_subtask_done_events(
         )
     assert result is None
     assert httpx_mock.get_requests() == []
+
+
+# ---------------------------------------------------------------------------
+# Rule 4 - Stale scan (M7)
+# ---------------------------------------------------------------------------
+
+_R4_NOW = datetime.fromisoformat("2026-04-20T09:00:00+00:00")  # Monday
+
+
+def _stale_candidate(
+    key: str = UNIT_KEY, *, stage: str = "Intermediate", summary: str = "Binary search"
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "fields": {
+            "summary": summary,
+            "Stage": {"value": stage},
+            HAS_HAD_TEST_FIELD: False,
+        },
+    }
+
+
+@pytest.mark.anyio
+async def test_rule4_happy_path_creates_test_subtask(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=_SEARCH_URL_RE,
+        json={"total": 1, "issues": [_stale_candidate()]},
+    )
+    # Replay-guard lookup: no prior idem label, proceed with write.
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 0, "issues": []})
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue", method="POST", json={"key": "PROJ-500"}
+    )
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue/{UNIT_KEY}", method="PUT", status_code=204
+    )
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue/{UNIT_KEY}/comment",
+        method="POST",
+        json={"id": "11001"},
+    )
+    async with JiraClient() as client:
+        processed = await rule4_stale_scan(client, run_id=42, now=_R4_NOW)
+    assert processed == [UNIT_KEY]
+    subtask_post = next(
+        r for r in httpx_mock.get_requests() if r.method == "POST" and r.url.path.endswith("/issue")
+    )
+    body = json.loads(subtask_post.content)["fields"]
+    assert body["summary"] == "[Intermediate][Test] \u2014 Binary search"
+    assert body["duedate"] == "2026-04-22"  # Mon + 2bd
+    assert "test" in body["labels"]
+    assert any(lbl.startswith("idem:") for lbl in body["labels"])
+    put = next(r for r in httpx_mock.get_requests() if r.method == "PUT")
+    assert json.loads(put.content)["fields"] == {HAS_HAD_TEST_FIELD: True}
+
+
+@pytest.mark.anyio
+async def test_rule4_replay_idem_label_short_circuits(httpx_mock: HTTPXMock) -> None:
+    """Second scan of a Unit with an existing idem label must not re-fire T9."""
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 1, "issues": [_stale_candidate()]})
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 1, "issues": [{"key": "PROJ-SUB"}]})
+    async with JiraClient() as client:
+        processed = await rule4_stale_scan(client, run_id=7, now=_R4_NOW)
+    assert processed == []
+    assert not any(r.method in {"POST", "PUT"} for r in httpx_mock.get_requests())
+
+
+@pytest.mark.anyio
+async def test_rule4_empty_candidate_pool_is_noop(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 0, "issues": []})
+    async with JiraClient() as client:
+        processed = await rule4_stale_scan(client, run_id=42, now=_R4_NOW)
+    assert processed == []
+    assert not any(r.method in {"POST", "PUT"} for r in httpx_mock.get_requests())
+
+
+@pytest.mark.anyio
+async def test_rule4_uses_ip_stale_eligible_filter(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 0, "issues": []})
+    async with JiraClient() as client:
+        await rule4_stale_scan(client, run_id=1, now=_R4_NOW)
+    request = next(r for r in httpx_mock.get_requests() if r.url.path.endswith("/search"))
+    assert f'filter = "{STALE_ELIGIBLE_FILTER}"' == request.url.params["jql"]
+
+
+@pytest.mark.anyio
+async def test_rule4_skips_candidate_missing_stage(httpx_mock: HTTPXMock) -> None:
+    bad = {"key": "PROJ-77", "fields": {"summary": "No stage", HAS_HAD_TEST_FIELD: False}}
+    good = _stale_candidate(key="PROJ-78")
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 2, "issues": [bad, good]})
+    # Replay-guard lookup for the good candidate only (bad one is skipped pre-guard).
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 0, "issues": []})
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue", method="POST", json={"key": "PROJ-501"}
+    )
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue/PROJ-78", method="PUT", status_code=204
+    )
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue/PROJ-78/comment",
+        method="POST",
+        json={"id": "11002"},
+    )
+    async with JiraClient() as client:
+        processed = await rule4_stale_scan(client, run_id=1, now=_R4_NOW)
+    assert processed == ["PROJ-78"]
