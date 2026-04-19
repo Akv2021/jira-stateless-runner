@@ -5,7 +5,7 @@
 # Sub-task and sets the durable `Has Had Test = true` lifetime guard so
 # the Unit never re-enters the candidate pool.
 
-name: ztmos-stale-scan
+name: runner-stale-scan
 
 on:
   schedule:

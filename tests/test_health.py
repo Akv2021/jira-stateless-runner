@@ -97,7 +97,7 @@ def test_open_alert_invokes_gh_and_mirrors_url(monkeypatch: pytest.MonkeyPatch) 
     assert state.open_alert_issue == url
     assert calls[0][:3] == ["gh", "issue", "create"]
     assert "--label" in calls[0]
-    assert "system-alert,ztmos" in calls[0]
+    assert "system-alert,runner" in calls[0]
 
 
 def test_maybe_close_alert_closes_after_recovery_streak(monkeypatch: pytest.MonkeyPatch) -> None:

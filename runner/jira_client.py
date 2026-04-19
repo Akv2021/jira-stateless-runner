@@ -134,21 +134,22 @@ class JiraClient:
         return result
 
     async def count_issues(self, jql: str) -> int:
-        """Return the number of issues matching ``jql``.
+        """Return the approximate number of issues matching ``jql``.
 
-        Uses ``/rest/api/3/search`` with ``maxResults=0`` so Jira returns
-        only the ``total`` counter without any issue payload. Intended
-        for existence checks such as the idempotency-label lookup in
-        ``runner.idempotency.has_been_applied`` (§5.3).
+        Uses ``POST /rest/api/3/search/approximate-count`` (the GA
+        successor to the removed ``/rest/api/3/search`` total field per
+        Atlassian CHANGE-2046). The response shape is ``{"count": N}``.
+        Intended for existence checks such as the idempotency-label
+        lookup in ``runner.idempotency.has_been_applied`` (§5.3).
         """
         response = await self._request(
-            "GET",
-            "/rest/api/3/search",
-            params={"jql": jql, "maxResults": 0},
+            "POST",
+            "/rest/api/3/search/approximate-count",
+            json={"jql": jql},
         )
         payload: dict[str, Any] = response.json()
-        total = payload.get("total", 0)
-        return int(total)
+        count = payload.get("count", 0)
+        return int(count)
 
     async def search_issues(
         self,
@@ -159,17 +160,18 @@ class JiraClient:
     ) -> list[dict[str, Any]]:
         """Return the issue payloads matching ``jql`` (single-page; no pagination).
 
-        Thin wrapper around ``/rest/api/3/search``. The caller supplies
-        ``fields`` to restrict the returned column set; passing ``None``
-        keeps Jira's default column projection. ``max_results`` is
-        clamped to 50 by default — Rule 4 (§4.2) and bootstrap checks
-        (§3.3) are both bounded small-batch reads; larger pulls must
-        paginate explicitly via ``startAt``.
+        Uses ``POST /rest/api/3/search/jql`` (the GA replacement for the
+        removed ``/rest/api/3/search`` per Atlassian CHANGE-2046). The
+        caller supplies ``fields`` to restrict the returned column set;
+        passing ``None`` keeps Jira's default column projection.
+        ``max_results`` is clamped to 50 by default — Rule 4 (§4.2) and
+        bootstrap checks (§3.3) are both bounded small-batch reads;
+        larger pulls must paginate explicitly via ``nextPageToken``.
         """
-        params: dict[str, Any] = {"jql": jql, "maxResults": max_results}
+        body: dict[str, Any] = {"jql": jql, "maxResults": max_results}
         if fields is not None:
-            params["fields"] = ",".join(fields)
-        response = await self._request("GET", "/rest/api/3/search", params=params)
+            body["fields"] = fields
+        response = await self._request("POST", "/rest/api/3/search/jql", json=body)
         payload: dict[str, Any] = response.json()
         issues = payload.get("issues", [])
         return list(issues) if isinstance(issues, list) else []

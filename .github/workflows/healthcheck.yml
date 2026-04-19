@@ -7,7 +7,7 @@
 # 30 minutes — a threshold that allows for one missed poll plus jitter
 # without false-positive noise.
 
-name: ztmos-healthcheck
+name: runner-healthcheck
 
 on:
   schedule:
