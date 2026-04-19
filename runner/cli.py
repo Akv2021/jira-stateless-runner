@@ -53,10 +53,10 @@ async def _fetch_new_events(
     """Pull changelogs for issues updated after ``since_iso``.
 
     Returns the classified events with ``id > since_id`` plus the
-    observed max changelog ID. Per-issue changelog fetching is bounded
-    to one page (100 entries) -- issues with deeper history than that
-    within a single poll window are expected to be rare; extension to
-    multi-page walks ships with the first live-run iteration.
+    observed max changelog ID. Per-issue changelog fetching walks
+    every page via ``JiraClient.iter_changelog_pages`` so an issue
+    whose full history exceeds the 100-entry default does not silently
+    truncate; the walker stops when Jira reports ``isLast == True``.
     """
     jql = _jql_updated_since(project_key, since_iso)
     issues = await client.search_issues(
@@ -68,11 +68,12 @@ async def _fetch_new_events(
         key = issue.get("key")
         if not isinstance(key, str):
             continue
-        page = await client.get_changelog(key)
-        for event in ingest_issue_changelog(issue, page, since_id=since_id):
-            events.append(event)
-            if event.id > max_id:
-                max_id = event.id
+        pages = await client.iter_changelog_pages(key)
+        for page in pages:
+            for event in ingest_issue_changelog(issue, page, since_id=since_id):
+                events.append(event)
+                if event.id > max_id:
+                    max_id = event.id
     events.sort(key=lambda e: e.id)
     return events, max_id
 

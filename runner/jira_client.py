@@ -264,12 +264,13 @@ class JiraClient:
     async def get_changelog(
         self, issue_key: str, *, start_at: int = 0, max_results: int = 100
     ) -> dict[str, Any]:
-        """Fetch the per-issue changelog page for ``issue_key``.
+        """Fetch a single changelog page for ``issue_key``.
 
         Hits ``/rest/api/3/issue/{key}/changelog`` per §3.4 and returns
-        the raw paginated payload (``values`` + ``startAt`` + ``total``).
-        Callers assemble the event stream by advancing ``startAt`` until
-        the page is exhausted.
+        the raw paginated payload (``values`` + ``startAt`` + ``total``
+        + ``isLast``). Callers that need the complete history must use
+        ``iter_changelog_pages`` (or advance ``startAt`` manually) until
+        the payload reports ``isLast == True``.
         """
         response = await self._request(
             "GET",
@@ -278,6 +279,40 @@ class JiraClient:
         )
         payload: dict[str, Any] = response.json()
         return payload
+
+    async def iter_changelog_pages(
+        self,
+        issue_key: str,
+        *,
+        max_results: int = 100,
+        page_cap: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return every changelog page for ``issue_key`` in ascending order.
+
+        Walks ``/rest/api/3/issue/{key}/changelog`` by incrementing
+        ``startAt`` until the payload reports ``isLast == True`` (Jira
+        v3 contract) or the page returns fewer than ``max_results``
+        entries -- the latter covers older deployments that omit the
+        ``isLast`` flag. ``page_cap`` bounds the walk at 2 000 entries
+        by default so a pathological issue cannot starve a poll cycle;
+        hitting the cap raises ``RuntimeError`` so the outer health
+        classifier can treat it as a logic failure (§6.1).
+        """
+        pages: list[dict[str, Any]] = []
+        start_at = 0
+        for _ in range(page_cap):
+            page = await self.get_changelog(issue_key, start_at=start_at, max_results=max_results)
+            pages.append(page)
+            values = page.get("values") or []
+            if not isinstance(values, list) or not values:
+                return pages
+            is_last = page.get("isLast")
+            if isinstance(is_last, bool) and is_last:
+                return pages
+            if len(values) < max_results:
+                return pages
+            start_at += len(values)
+        raise RuntimeError(f"changelog pagination exceeded page_cap={page_cap} for {issue_key}")
 
     async def list_comments(self, issue_key: str) -> list[dict[str, Any]]:
         """Return all comments on ``issue_key`` as a list of Jira payloads.
