@@ -1,6 +1,6 @@
 """Idempotent Jira substrate provisioner (Phase 1 Part A).
 
-Automates the API-automatable subset of ``temp/JiraProvisioningGuide.md``
+Automates the API-automatable subset of ``docs/JiraProvisioningGuide.md``
 Part A: creates the two Scrum projects, the 16 custom fields (with
 select-list options), one System Config ``Task`` per project labelled
 ``runner-system``, the seven v0.7.9 saved JQL filters, and the
@@ -11,8 +11,8 @@ against a partially-provisioned site only create what is still missing.
 Manual Part B steps (Rule 3 Automation, §9.1 buttons, board swimlanes)
 remain UI-only on Jira Cloud Free and are listed in the final summary.
 
-Cross-reference: ``temp/JiraProvisioningGuide.md`` §§A.1-A.6,
-``temp/ExternalRunner.md`` §§3.2-3.3, ``temp/JiraImplementation.md`` §§2, 5, 9.2.
+Cross-reference: ``docs/JiraProvisioningGuide.md`` §§A.1-A.6,
+``docs/ExternalRunner.md`` §§3.2-3.3, ``docs/JiraImplementation.md`` §§2, 5, 9.2.
 
 Credentials are resolved via the same pydantic-settings loader pattern
 as ``runner.config.Settings``: environment variables (or a local
@@ -69,7 +69,7 @@ class FieldSpec:
     options: tuple[str, ...] = ()
 
 
-# 16 custom fields per temp/JiraProvisioningGuide.md §A.2.
+# 16 custom fields per docs/JiraProvisioningGuide.md §A.2.
 # "Has Had Test" is modelled as a string-valued single-select with
 # options ("false", "true") so the IP-Stale-Eligible JQL clause
 # `"Has Had Test" = false` matches via Jira's text-option semantics.
@@ -570,7 +570,7 @@ class Provisioner:
                                         "type": "text",
                                         "text": (
                                             "DO NOT EDIT MANUALLY. External Runner state "
-                                            "substrate — see temp/ExternalRunner.md §3."
+                                            "substrate — see docs/ExternalRunner.md §3."
                                         ),
                                     }
                                 ],

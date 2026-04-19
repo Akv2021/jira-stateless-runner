@@ -296,3 +296,73 @@ async def test_search_issues_rewrites_custom_field_ids_to_display_names(
     assert fields["Work Type"] == {"value": "Learn"}
     assert fields["Has Had Test"] is True
     assert fields["summary"] == "pass-through"
+
+
+@pytest.mark.anyio
+async def test_iter_changelog_pages_walks_until_is_last(httpx_mock: HTTPXMock) -> None:
+    """The paginator advances ``startAt`` until Jira reports ``isLast=True``.
+
+    Covers the M12 multi-page changelog walk: an issue with more than
+    ``max_results`` history entries must surface every page to the
+    ingestor, not just the first 100 rows.
+    """
+    changelog_url = f"{BASE_URL}/rest/api/3/issue/{ISSUE_KEY}/changelog"
+    httpx_mock.add_response(
+        url=f"{changelog_url}?startAt=0&maxResults=2",
+        method="GET",
+        json={
+            "startAt": 0,
+            "maxResults": 2,
+            "isLast": False,
+            "values": [{"id": "1"}, {"id": "2"}],
+        },
+    )
+    httpx_mock.add_response(
+        url=f"{changelog_url}?startAt=2&maxResults=2",
+        method="GET",
+        json={
+            "startAt": 2,
+            "maxResults": 2,
+            "isLast": True,
+            "values": [{"id": "3"}],
+        },
+    )
+    async with JiraClient() as client:
+        pages = await client.iter_changelog_pages(ISSUE_KEY, max_results=2)
+    assert [entry["id"] for page in pages for entry in page["values"]] == ["1", "2", "3"]
+
+
+@pytest.mark.anyio
+async def test_iter_changelog_pages_stops_on_short_page_without_is_last(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Older responses may omit ``isLast``; the walker stops on a short page."""
+    changelog_url = f"{BASE_URL}/rest/api/3/issue/{ISSUE_KEY}/changelog"
+    httpx_mock.add_response(
+        url=f"{changelog_url}?startAt=0&maxResults=2",
+        method="GET",
+        json={"startAt": 0, "maxResults": 2, "values": [{"id": "1"}]},
+    )
+    async with JiraClient() as client:
+        pages = await client.iter_changelog_pages(ISSUE_KEY, max_results=2)
+    assert len(pages) == 1
+
+
+@pytest.mark.anyio
+async def test_iter_changelog_pages_raises_on_page_cap(httpx_mock: HTTPXMock) -> None:
+    """Runaway pagination trips a RuntimeError classified as ``logic`` by health."""
+    changelog_url = f"{BASE_URL}/rest/api/3/issue/{ISSUE_KEY}/changelog"
+    for start in (0, 1, 2):
+        httpx_mock.add_response(
+            url=f"{changelog_url}?startAt={start}&maxResults=1",
+            method="GET",
+            json={
+                "startAt": start,
+                "maxResults": 1,
+                "isLast": False,
+                "values": [{"id": str(start + 1)}],
+            },
+        )
+    async with JiraClient() as client:
+        with pytest.raises(RuntimeError, match="page_cap"):
+            await client.iter_changelog_pages(ISSUE_KEY, max_results=1, page_cap=3)
