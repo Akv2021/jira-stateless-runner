@@ -21,6 +21,7 @@ from runner.watermark import (
     BootstrapIncompleteError,
     WatermarkState,
 )
+from tests.conftest import CUSTOM_FIELD_IDS
 
 BASE_URL = "https://example.atlassian.net"
 _SEARCH_URL_RE = re.compile(r"https://example\.atlassian\.net/rest/api/3/search.*")
@@ -56,14 +57,17 @@ def _system_payload(
     version: str | None = "0.1.1",
     alert_url: str | None = None,
 ) -> dict[str, Any]:
+    # Real Jira keys custom-field values by their internal ID, not their
+    # display name (M8 field-discovery bootstrap). The mock payload
+    # mirrors that shape so watermark.read exercises the translation.
     return {
         "key": SYS_KEY,
         "fields": {
-            "Last Processed Changelog Id": changelog_id,
-            "Last Successful Poll At": last_poll,
-            "Last Stale Scan At": None,
-            "Runner Version": version,
-            "Open Alert Issue Url": alert_url,
+            CUSTOM_FIELD_IDS["Last Processed Changelog Id"]: changelog_id,
+            CUSTOM_FIELD_IDS["Last Successful Poll At"]: last_poll,
+            CUSTOM_FIELD_IDS["Last Stale Scan At"]: None,
+            CUSTOM_FIELD_IDS["Runner Version"]: version,
+            CUSTOM_FIELD_IDS["Open Alert Issue Url"]: alert_url,
         },
     }
 
@@ -112,10 +116,11 @@ async def test_write_watermark_issues_put_with_all_fields(httpx_mock: HTTPXMock)
         await watermark.write(
             client, state, last_processed_changelog_id=99, runner_version="0.1.1", now=now
         )
-    body = json.loads(httpx_mock.get_requests()[0].content)["fields"]
-    assert body["Last Processed Changelog Id"] == 99
-    assert body["Runner Version"] == "0.1.1"
-    assert body["Last Successful Poll At"].startswith("2026-04-20T09:00:00")
+    put = next(r for r in httpx_mock.get_requests() if r.method == "PUT")
+    body = json.loads(put.content)["fields"]
+    assert body[CUSTOM_FIELD_IDS["Last Processed Changelog Id"]] == 99
+    assert body[CUSTOM_FIELD_IDS["Runner Version"]] == "0.1.1"
+    assert body[CUSTOM_FIELD_IDS["Last Successful Poll At"]].startswith("2026-04-20T09:00:00")
 
 
 @pytest.mark.anyio

@@ -24,16 +24,28 @@ from typing import Any, Final
 
 import httpx
 
+from runner.jira_client import IssueNotFoundError
+
 RECOVERY_STREAK_TARGET: Final[int] = 3
 """Consecutive successful runs before ``maybe_close_alert`` closes (§6.4)."""
+
+_NEVER_ALERTS: Final[int] = 10**9
+"""Sentinel threshold for non-alerting failure kinds (e.g. ``not_found``)."""
 
 THRESHOLDS: Final[dict[str, int]] = {
     "http_401": 1,
     "http_429": 5,
     "http_5xx": 3,
     "logic": 1,
+    "not_found": _NEVER_ALERTS,
 }
-"""Per-kind failure thresholds (§6.3). ``http_401`` / ``logic`` are stop-the-line."""
+"""Per-kind failure thresholds (§6.3). ``http_401`` / ``logic`` are stop-the-line.
+
+``not_found`` is a deliberate non-alerting bucket: per §6.1 a 404 means
+the target issue was deleted mid-flight by the user, a legitimate event
+that must never page on-call. The sentinel threshold ensures
+``record_failure`` returns ``False`` even on the first occurrence.
+"""
 
 _DEFAULT_STATE_PATH: Final[Path] = Path(".runner-state/health.json")
 
@@ -59,11 +71,19 @@ def _utc_now_iso() -> str:
 
 
 def classify(exc: BaseException) -> str:
-    """Return the §6.3 failure-kind label for ``exc`` (HTTP status or ``logic``)."""
+    """Return the §6.3 failure-kind label for ``exc`` (HTTP status or ``logic``).
+
+    ``IssueNotFoundError`` and raw ``HTTPStatusError(404)`` both route to
+    ``not_found`` per §6.1 -- user-deleted issues are not alert-worthy.
+    """
+    if isinstance(exc, IssueNotFoundError):
+        return "not_found"
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
         if code in (401, 403):
             return "http_401"
+        if code == 404:
+            return "not_found"
         if code == 429:
             return "http_429"
         if 500 <= code < 600:

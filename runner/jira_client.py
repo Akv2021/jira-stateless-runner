@@ -37,6 +37,20 @@ from runner.config import Settings, get_settings
 _RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
+class IssueNotFoundError(Exception):
+    """Raised when Jira returns 404 for a read/write on a specific issue.
+
+    Per docs/ExternalRunner.md §6.1, 404 is a legitimate user-initiated
+    deletion mid-flight and must neither retry nor advance the failure
+    counter. Callers in ``runner.rules`` catch this, log WARN, and skip
+    the single affected event so the rest of the poll batch proceeds.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        super().__init__(f"Jira 404 Not Found: {path}")
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Return True for transient HTTP/network failures worth retrying."""
     if isinstance(exc, httpx.TimeoutException | httpx.TransportError):
@@ -65,6 +79,7 @@ class JiraClient:
         self._settings: Settings = settings if settings is not None else get_settings()
         self._owns_client: bool = client is None
         self._client: httpx.AsyncClient = client if client is not None else self._build_client()
+        self._field_map: dict[str, str] | None = None
 
     def _build_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -112,11 +127,17 @@ class JiraClient:
     ) -> httpx.Response:
         """Issue an HTTP request with retry on 5xx / 429 / transport errors.
 
-        Non-retryable 4xx responses propagate as ``HTTPStatusError`` on
-        the first attempt; the caller decides whether to treat them as
-        hard failures (auth, not-found) or domain-level outcomes.
+        404 responses are translated into ``IssueNotFoundError`` (a
+        non-retryable, non-alerting exception per §6.1) instead of the
+        generic ``HTTPStatusError``; the health-state classifier routes
+        it to the ``not_found`` bucket and rule handlers catch it to skip
+        the single affected event without aborting the poll batch.
+        Other non-retryable 4xx responses propagate as ``HTTPStatusError``
+        on the first attempt.
         """
         response = await self._client.request(method, path, params=params, json=json)
+        if response.status_code == 404:
+            raise IssueNotFoundError(path)
         response.raise_for_status()
         return response
 
@@ -124,14 +145,17 @@ class JiraClient:
         """Fetch a Jira issue by key and return its raw JSON payload.
 
         Baseline connectivity method: hits ``/rest/api/3/issue/{key}``
-        and returns the parsed JSON dict with no field filtering. Raises
-        ``httpx.HTTPStatusError`` on 404 (issue missing) or 401/403
-        (auth / permission). See docs/JiraImplementation.md §2 for the
-        schema of the returned payload.
+        and returns the parsed JSON dict. Raises ``IssueNotFoundError``
+        on 404 (issue deleted mid-flight, §6.1) and ``httpx.HTTPStatusError``
+        on 401/403 (auth / permission). The returned ``fields`` dict is
+        rewritten so custom-field IDs (``customfield_XXXXX``) map back to
+        their display names (M8 read-side translation) -- callers read
+        by human-readable name (``"Stage"``, ``"Revision Done"``) per
+        docs/JiraImplementation.md §2.
         """
         response = await self._request("GET", f"/rest/api/3/issue/{issue_key}")
         result: dict[str, Any] = response.json()
-        return result
+        return await self._translate_payload_fields(result)
 
     async def count_issues(self, jql: str) -> int:
         """Return the approximate number of issues matching ``jql``.
@@ -151,6 +175,63 @@ class JiraClient:
         count = payload.get("count", 0)
         return int(count)
 
+    async def get_field_map(self) -> dict[str, str]:
+        """Return ``{display_name: field_id}`` for every field on the tenant.
+
+        Populates lazily on first call via ``GET /rest/api/3/field`` and
+        caches the result on the instance for the lifetime of the
+        client. Enables display-name writes (``"Revision Target"``) to
+        be translated to Jira-internal IDs (``customfield_10144``) in
+        ``update_issue`` / ``create_subtask`` — the M8 field-discovery
+        bootstrap per docs/ExternalRunner.md §3.2. System fields are
+        returned with ``id == name`` so the translator can treat both
+        uniformly.
+        """
+        if self._field_map is None:
+            response = await self._request("GET", "/rest/api/3/field")
+            fields = response.json()
+            mapping: dict[str, str] = {}
+            if isinstance(fields, list):
+                for entry in fields:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = entry.get("name")
+                    field_id = entry.get("id")
+                    if isinstance(name, str) and isinstance(field_id, str):
+                        mapping[name] = field_id
+            self._field_map = mapping
+        return self._field_map
+
+    async def _translate_field_keys(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """Resolve any display-name keys in ``fields`` to their Jira field IDs.
+
+        Keys absent from the field map pass through unchanged — this
+        keeps system fields keyed by their canonical name (``summary``,
+        ``labels``, ``parent``, ``duedate``) working alongside custom
+        fields resolved to ``customfield_XXXXX``.
+        """
+        field_map = await self.get_field_map()
+        return {field_map.get(k, k): v for k, v in fields.items()}
+
+    async def _translate_payload_fields(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Rewrite ``payload["fields"]`` keys from Jira IDs to display names.
+
+        The inverse of ``_translate_field_keys``. Real Jira
+        ``GET /rest/api/3/issue`` returns custom fields keyed by
+        ``customfield_XXXXX`` IDs; callers (``runner.rules``,
+        ``runner.watermark``) address fields by their human-readable
+        name, so the client rewrites the dict in place before returning.
+        System fields (``summary``, ``labels``, ``parent``, ``duedate``)
+        are absent from the inverse map and pass through unchanged.
+        """
+        fields = payload.get("fields")
+        if not isinstance(fields, dict):
+            return payload
+        field_map = await self.get_field_map()
+        inverse: dict[str, str] = {v: k for k, v in field_map.items()}
+        payload["fields"] = {inverse.get(k, k): v for k, v in fields.items()}
+        return payload
+
     async def search_issues(
         self,
         jql: str,
@@ -167,6 +248,8 @@ class JiraClient:
         ``max_results`` is clamped to 50 by default — Rule 4 (§4.2) and
         bootstrap checks (§3.3) are both bounded small-batch reads;
         larger pulls must paginate explicitly via ``nextPageToken``.
+        Each returned issue payload has its ``fields`` dict rewritten to
+        display-name keys (M8 read-side translation, mirrors ``get_issue``).
         """
         body: dict[str, Any] = {"jql": jql, "maxResults": max_results}
         if fields is not None:
@@ -174,7 +257,9 @@ class JiraClient:
         response = await self._request("POST", "/rest/api/3/search/jql", json=body)
         payload: dict[str, Any] = response.json()
         issues = payload.get("issues", [])
-        return list(issues) if isinstance(issues, list) else []
+        if not isinstance(issues, list):
+            return []
+        return [await self._translate_payload_fields(issue) for issue in issues]
 
     async def get_changelog(
         self, issue_key: str, *, start_at: int = 0, max_results: int = 100
@@ -193,6 +278,20 @@ class JiraClient:
         )
         payload: dict[str, Any] = response.json()
         return payload
+
+    async def list_comments(self, issue_key: str) -> list[dict[str, Any]]:
+        """Return all comments on ``issue_key`` as a list of Jira payloads.
+
+        Used by the §6.6 partial-success recovery path in ``runner.audit``
+        to detect whether an audit comment carrying a given idempotency
+        key has already been posted -- enabling replay-safe re-emission
+        when a Subtask + field write succeeded but the comment POST
+        failed on a prior run.
+        """
+        response = await self._request("GET", f"/rest/api/3/issue/{issue_key}/comment")
+        payload: dict[str, Any] = response.json()
+        comments = payload.get("comments", [])
+        return list(comments) if isinstance(comments, list) else []
 
     async def post_comment(self, issue_key: str, body_text: str) -> dict[str, Any]:
         """Post a plain-text comment on ``issue_key`` and return the Jira payload.
@@ -252,7 +351,8 @@ class JiraClient:
             fields["Story Points"] = story_points
         if extra_fields:
             fields.update(extra_fields)
-        response = await self._request("POST", "/rest/api/3/issue", json={"fields": fields})
+        translated = await self._translate_field_keys(fields)
+        response = await self._request("POST", "/rest/api/3/issue", json={"fields": translated})
         result: dict[str, Any] = response.json()
         return result
 
@@ -260,9 +360,11 @@ class JiraClient:
         """Edit ``issue_key`` with the supplied ``fields`` payload.
 
         Wraps ``PUT /rest/api/3/issue/{key}``; returns ``None`` on the
-        Jira 204 success. Raises ``httpx.HTTPStatusError`` on 4xx. Field
-        names must match the site's Jira schema; mapping of display
-        names (``Revision Target``) to ``customfield_XXXXX`` IDs is the
-        caller's responsibility until the M8 bootstrap lands.
+        Jira 204 success. Raises ``httpx.HTTPStatusError`` on 4xx.
+        Display-name keys (``"Revision Target"``) are translated to
+        ``customfield_XXXXX`` IDs via ``get_field_map`` (§3.2 M8); keys
+        absent from the map pass through so system fields remain keyed
+        by their canonical name.
         """
-        await self._request("PUT", f"/rest/api/3/issue/{issue_key}", json={"fields": fields})
+        translated = await self._translate_field_keys(fields)
+        await self._request("PUT", f"/rest/api/3/issue/{issue_key}", json={"fields": translated})
