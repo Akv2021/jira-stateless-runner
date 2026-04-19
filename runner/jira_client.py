@@ -150,6 +150,48 @@ class JiraClient:
         total = payload.get("total", 0)
         return int(total)
 
+    async def search_issues(
+        self,
+        jql: str,
+        *,
+        fields: list[str] | None = None,
+        max_results: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return the issue payloads matching ``jql`` (single-page; no pagination).
+
+        Thin wrapper around ``/rest/api/3/search``. The caller supplies
+        ``fields`` to restrict the returned column set; passing ``None``
+        keeps Jira's default column projection. ``max_results`` is
+        clamped to 50 by default — Rule 4 (§4.2) and bootstrap checks
+        (§3.3) are both bounded small-batch reads; larger pulls must
+        paginate explicitly via ``startAt``.
+        """
+        params: dict[str, Any] = {"jql": jql, "maxResults": max_results}
+        if fields is not None:
+            params["fields"] = ",".join(fields)
+        response = await self._request("GET", "/rest/api/3/search", params=params)
+        payload: dict[str, Any] = response.json()
+        issues = payload.get("issues", [])
+        return list(issues) if isinstance(issues, list) else []
+
+    async def get_changelog(
+        self, issue_key: str, *, start_at: int = 0, max_results: int = 100
+    ) -> dict[str, Any]:
+        """Fetch the per-issue changelog page for ``issue_key``.
+
+        Hits ``/rest/api/3/issue/{key}/changelog`` per §3.4 and returns
+        the raw paginated payload (``values`` + ``startAt`` + ``total``).
+        Callers assemble the event stream by advancing ``startAt`` until
+        the page is exhausted.
+        """
+        response = await self._request(
+            "GET",
+            f"/rest/api/3/issue/{issue_key}/changelog",
+            params={"startAt": start_at, "maxResults": max_results},
+        )
+        payload: dict[str, Any] = response.json()
+        return payload
+
     async def post_comment(self, issue_key: str, body_text: str) -> dict[str, Any]:
         """Post a plain-text comment on ``issue_key`` and return the Jira payload.
 
