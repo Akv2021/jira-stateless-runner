@@ -172,6 +172,21 @@ SPRINT_NAME = "Cycle 1 — bootstrap"
 SPRINT_GOAL = "Validate Jira Stateless Runner Posture J-C end-to-end on a pilot Unit."
 SYSTEM_CONFIG_LABELS = ("runner-system", "hidden")
 
+# Select-list defaults per Guide §A.2 ("default `Active`", etc.). Applied
+# via the field-context default-value API so they take effect on new
+# issues without a Rule 3 detour. Order is arbitrary; each is idempotent.
+FIELD_SELECT_DEFAULTS: tuple[tuple[str, str], ...] = (
+    ("Lifecycle", "Active"),
+    ("Outcome", "Pass"),
+    ("Has Had Test", "false"),
+)
+
+# Numeric defaults per Guide §A.2. Best-effort: some Jira Cloud Free
+# sites reject float defaults on the context API with a 400, in which
+# case the runner falls back to its spec-level default=Target 2
+# semantics and this step records the skip in the summary.
+FIELD_NUMERIC_DEFAULTS: tuple[tuple[str, float], ...] = (("Revision Done", 0.0),)
+
 
 # --- Retry policy (shared with runner/jira_client.py) --------------------
 _RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
@@ -201,6 +216,13 @@ class Summary:
     sprints_created: dict[str, int] = field(default_factory=dict)
     sprints_existed: dict[str, int] = field(default_factory=dict)
     sprints_missing_boards: list[str] = field(default_factory=list)
+    # Maps screen id -> list of Runner field names attached this run.
+    screens_attached: dict[str, list[str]] = field(default_factory=dict)
+    # Maps Runner field name -> string repr of the default that is now set.
+    defaults_set: dict[str, str] = field(default_factory=dict)
+    # Runner field names whose default write was rejected (recorded so the
+    # summary can surface a warning without failing the whole run).
+    defaults_skipped: dict[str, str] = field(default_factory=dict)
 
 
 class Provisioner:
@@ -210,6 +232,9 @@ class Provisioner:
         self._client = client
         self._account_id = account_id
         self.summary = Summary()
+        # Populated by ensure_fields(); consumed by the screen-attach and
+        # default-value steps so they don't re-scan the whole site.
+        self._field_id_by_name: dict[str, str] = {}
 
     @retry(
         retry=retry_if_exception(_is_retryable),
@@ -272,6 +297,7 @@ class Provisioner:
                 self.summary.fields_created[spec.name] = field_id
             else:
                 self.summary.fields_existed[spec.name] = field_id
+            self._field_id_by_name[spec.name] = field_id
             if spec.options:
                 await self._ensure_field_options(spec.name, field_id, spec.options)
 
@@ -339,6 +365,183 @@ class Provisioner:
         )
         r3.raise_for_status()
         self.summary.options_added[field_name] = missing
+
+    # ---- Field -> screen attachments (A.3) -----------------------------
+    async def ensure_field_screen_attachments(self) -> None:
+        """Attach every Runner custom field to each project's active screens.
+
+        POST ``/rest/api/3/filter`` rejects JQL that references custom
+        fields which are not on at least one screen visible to the token
+        user. This step resolves each project's Issue Type Screen Scheme
+        (ISTS) chain and attaches all 16 Runner fields to the first tab
+        of every screen in the chain. Idempotent via per-tab field
+        enumeration (Guide §A.3).
+        """
+        for proj in PROJECTS:
+            pid = await self._project_id(proj.key)
+            if pid is None:
+                continue
+            screen_ids = await self._project_screen_ids(pid)
+            for screen_id in sorted(screen_ids):
+                await self._attach_runner_fields_to_screen(screen_id)
+
+    async def _project_id(self, project_key: str) -> str | None:
+        r = await self._request("GET", f"/rest/api/3/project/{project_key}")
+        if not r.is_success:
+            return None
+        return str(r.json()["id"])
+
+    async def _project_screen_ids(self, project_id: str) -> set[int]:
+        """Return unique screen ids used by a project's non-Bug issuetypes."""
+        r = await self._request(
+            "GET",
+            "/rest/api/3/issuetypescreenscheme/project",
+            params={"projectId": project_id},
+        )
+        r.raise_for_status()
+        values = r.json().get("values", [])
+        if not values:
+            return set()
+        ists_id = str(values[0]["issueTypeScreenScheme"]["id"])
+        r2 = await self._request(
+            "GET",
+            f"/rest/api/3/issuetypescreenscheme/{ists_id}/mapping",
+            params={"maxResults": 100},
+        )
+        r2.raise_for_status()
+        screen_scheme_ids: set[str] = {
+            str(m["screenSchemeId"]) for m in r2.json().get("values", [])
+        }
+        if not screen_scheme_ids:
+            return set()
+        r3 = await self._request(
+            "GET",
+            "/rest/api/3/screenscheme",
+            params={"id": sorted(screen_scheme_ids), "maxResults": 100},
+        )
+        r3.raise_for_status()
+        out: set[int] = set()
+        for ss in r3.json().get("values", []):
+            screens = ss.get("screens", {}) or {}
+            for key in ("default", "create", "edit", "view"):
+                sid = screens.get(key)
+                if isinstance(sid, int):
+                    out.add(sid)
+                elif isinstance(sid, str) and sid.isdigit():
+                    out.add(int(sid))
+        return out
+
+    async def _attach_runner_fields_to_screen(self, screen_id: int) -> None:
+        r = await self._request("GET", f"/rest/api/3/screens/{screen_id}/tabs")
+        if not r.is_success:
+            return
+        tabs = r.json()
+        if not isinstance(tabs, list) or not tabs:
+            return
+        tab_id = int(tabs[0]["id"])
+        r2 = await self._request("GET", f"/rest/api/3/screens/{screen_id}/tabs/{tab_id}/fields")
+        if not r2.is_success:
+            return
+        present: set[str] = {str(f.get("id")) for f in r2.json()}
+        added: list[str] = []
+        for name, fid in self._field_id_by_name.items():
+            if fid in present:
+                continue
+            r3 = await self._request(
+                "POST",
+                f"/rest/api/3/screens/{screen_id}/tabs/{tab_id}/fields",
+                json={"fieldId": fid},
+            )
+            if r3.is_success:
+                added.append(name)
+        if added:
+            self.summary.screens_attached[str(screen_id)] = added
+
+    # ---- Field default values (A.2) ------------------------------------
+    async def ensure_field_defaults(self) -> None:
+        """Set documented default values on select-list and numeric fields.
+
+        Select-list defaults (Lifecycle, Outcome, Has Had Test) are
+        mandatory per Guide §A.2; the numeric Revision Done default is
+        best-effort. Each PUT is preceded by a GET so reruns against
+        already-defaulted contexts become no-ops.
+        """
+        for name, option_value in FIELD_SELECT_DEFAULTS:
+            await self._set_select_default(name, option_value)
+        for name, number in FIELD_NUMERIC_DEFAULTS:
+            await self._set_numeric_default(name, number)
+
+    async def _set_select_default(self, field_name: str, option_value: str) -> None:
+        fid = self._field_id_by_name.get(field_name)
+        if fid is None:
+            return
+        context_id = await self._first_context(fid)
+        if context_id is None:
+            return
+        option_id = await self._find_option_id(fid, context_id=context_id, value=option_value)
+        if option_id is None:
+            self.summary.defaults_skipped[field_name] = f"option {option_value!r} not found"
+            return
+        current = await self._current_default(fid)
+        if current.get("type") == "option.single" and str(current.get("optionId")) == option_id:
+            return
+        body = {
+            "defaultValues": [
+                {"type": "option.single", "contextId": context_id, "optionId": option_id}
+            ]
+        }
+        r = await self._request("PUT", f"/rest/api/3/field/{fid}/context/defaultValue", json=body)
+        if r.is_success:
+            self.summary.defaults_set[field_name] = option_value
+        else:
+            self.summary.defaults_skipped[field_name] = f"{r.status_code}: {r.text[:120]}"
+
+    async def _set_numeric_default(self, field_name: str, number: float) -> None:
+        fid = self._field_id_by_name.get(field_name)
+        if fid is None:
+            return
+        context_id = await self._first_context(fid)
+        if context_id is None:
+            return
+        current = await self._current_default(fid)
+        if current.get("type") == "float" and float(current.get("number", "nan")) == number:
+            return
+        body = {"defaultValues": [{"type": "float", "contextId": context_id, "number": number}]}
+        r = await self._request("PUT", f"/rest/api/3/field/{fid}/context/defaultValue", json=body)
+        if r.is_success:
+            self.summary.defaults_set[field_name] = str(number)
+        else:
+            self.summary.defaults_skipped[field_name] = f"{r.status_code}: {r.text[:120]}"
+
+    async def _first_context(self, field_id: str) -> str | None:
+        r = await self._request("GET", f"/rest/api/3/field/{field_id}/context")
+        if not r.is_success:
+            return None
+        contexts = r.json().get("values", [])
+        if not contexts:
+            return None
+        return str(contexts[0]["id"])
+
+    async def _find_option_id(self, field_id: str, *, context_id: str, value: str) -> str | None:
+        r = await self._request(
+            "GET",
+            f"/rest/api/3/field/{field_id}/context/{context_id}/option",
+        )
+        if not r.is_success:
+            return None
+        for opt in r.json().get("values", []):
+            if opt.get("value") == value:
+                return str(opt["id"])
+        return None
+
+    async def _current_default(self, field_id: str) -> dict[str, Any]:
+        r = await self._request("GET", f"/rest/api/3/field/{field_id}/context/defaultValue")
+        if not r.is_success:
+            return {}
+        values = r.json().get("values", [])
+        if not values or not isinstance(values[0], dict):
+            return {}
+        return values[0]
 
     # ---- System Config issues (A.4) ------------------------------------
     async def ensure_system_configs(self) -> None:
@@ -451,6 +654,8 @@ class Provisioner:
         for proj in PROJECTS:
             await self.ensure_project(proj)
         await self.ensure_fields()
+        await self.ensure_field_screen_attachments()
+        await self.ensure_field_defaults()
         await self.ensure_system_configs()
         await self.ensure_filters()
         await self.ensure_sprints()
@@ -476,6 +681,15 @@ def print_summary(summary: Summary) -> None:
         print("Options added to existing fields:")
         for name, vals in summary.options_added.items():
             print(f"  {name:32s} += {vals}")
+    if summary.screens_attached:
+        print("Fields attached to screens:")
+        for screen_id, names in summary.screens_attached.items():
+            print(f"  screen {screen_id:<8s} += {names}")
+    print(_fmt_pairs("Field defaults set", dict(summary.defaults_set)))
+    if summary.defaults_skipped:
+        print("WARN: field defaults skipped:")
+        for name, reason in summary.defaults_skipped.items():
+            print(f"  {name:32s} -> {reason}")
     print(_fmt_pairs("System Config issues created", dict(summary.system_configs_created)))
     print(_fmt_pairs("System Config issues existed", dict(summary.system_configs_existed)))
     print(_fmt_pairs("Filters created", dict(summary.filters_created)))
@@ -485,13 +699,11 @@ def print_summary(summary: Summary) -> None:
     if summary.sprints_missing_boards:
         print(f"WARN: no Scrum board found for: {summary.sprints_missing_boards}")
     print("\nRemaining manual steps (Jira Cloud Free UI only — see Guide Part B):")
-    print("  1. Attach fields 1-11 to Unit screens; fields 12-16 to System Config screen")
-    print("  2. Set defaults: Lifecycle=Active, Outcome=Pass, Revision Done=0, Has Had Test=false")
-    print("  3. Create Rule 3 Automation (Lifecycle field-change -> T5/T6/T7/T8) per project")
-    print("  4. Add §9.1 Manual-Trigger buttons: Archive, Pause, Resume (per project)")
-    print("  5. Configure board swimlanes by Lifecycle (Active / Paused / Archived)")
-    print("  6. Tune notification scheme (Issue updated = OFF)")
-    print("  7. Run Guide §E verification checklist rows E1-E10 before M11 smoke test")
+    print("  1. Create Rule 3 Automation (Lifecycle field-change -> T5/T6/T7/T8) per project")
+    print("  2. Add §9.1 Manual-Trigger buttons: Archive, Pause, Resume (per project)")
+    print("  3. Configure board swimlanes by Lifecycle (Active / Paused / Archived)")
+    print("  4. Tune notification scheme (Issue updated = OFF)")
+    print("  5. Run Guide §E verification checklist rows E1-E10 before M11 smoke test")
 
 
 # --- Configuration -------------------------------------------------------
