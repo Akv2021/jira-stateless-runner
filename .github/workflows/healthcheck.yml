@@ -1,0 +1,50 @@
+# Independent healthcheck workflow (docs/ExternalRunner.md §6.5).
+#
+# Detects the failure mode where the main poll-dispatch cron stops
+# firing entirely (GitHub outage, workflow disabled, expired PAT). Runs
+# every 6 hours, reads `Last Successful Poll At` from the Jira System
+# Config issue, and opens a `gh` alert if that timestamp drifts past
+# 30 minutes — a threshold that allows for one missed poll plus jitter
+# without false-positive noise.
+
+name: ztmos-healthcheck
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: Independent watchdog
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install runner
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run healthcheck
+        run: python -m runner health
+        env:
+          JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

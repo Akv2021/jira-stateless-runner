@@ -1,0 +1,60 @@
+# Stale-scan workflow — Rule 4 / T9 (docs/ExternalRunner.md §4.2).
+#
+# Fires Monday 10:00 UTC. Rule 4 runs the `IP-Stale-Eligible` saved
+# filter (§9.2 Solo profile) and, for each matched Unit, creates a Test
+# Sub-task and sets the durable `Has Had Test = true` lifetime guard so
+# the Unit never re-enters the candidate pool.
+
+name: ztmos-stale-scan
+
+on:
+  schedule:
+    - cron: '0 10 * * MON'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  scan:
+    name: Rule 4 stale scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          curl -sSL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+
+      - name: Credential scan (gitleaks)
+        run: gitleaks detect --redact --verbose --config .gitleaks.toml
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install runner
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run stale scan
+        run: python -m runner stale
+        env:
+          JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
