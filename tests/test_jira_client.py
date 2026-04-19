@@ -135,8 +135,9 @@ async def test_injected_client_not_closed_on_aexit() -> None:
 @pytest.mark.anyio
 async def test_count_issues_returns_total(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
-        url=f"{BASE_URL}/rest/api/3/search?jql=project+%3D+PROJ&maxResults=0",
-        json={"total": 42, "issues": []},
+        url=f"{BASE_URL}/rest/api/3/search/approximate-count",
+        method="POST",
+        json={"count": 42},
     )
     async with JiraClient() as client:
         total = await client.count_issues("project = PROJ")

@@ -70,7 +70,7 @@ def _system_payload(
 
 @pytest.mark.anyio
 async def test_read_watermark_returns_state(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 1, "issues": [{"key": SYS_KEY}]})
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"count": 1, "issues": [{"key": SYS_KEY}]})
     httpx_mock.add_response(url=SYS_ISSUE_URL, json=_system_payload())
     async with JiraClient() as client:
         state = await watermark.read(client, "PROJ")
@@ -81,7 +81,7 @@ async def test_read_watermark_returns_state(httpx_mock: HTTPXMock) -> None:
 
 @pytest.mark.anyio
 async def test_read_watermark_defaults_missing_id_to_zero(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 1, "issues": [{"key": SYS_KEY}]})
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"count": 1, "issues": [{"key": SYS_KEY}]})
     httpx_mock.add_response(url=SYS_ISSUE_URL, json=_system_payload(changelog_id=None))
     async with JiraClient() as client:
         state = await watermark.read(client, "PROJ")
@@ -90,7 +90,7 @@ async def test_read_watermark_defaults_missing_id_to_zero(httpx_mock: HTTPXMock)
 
 @pytest.mark.anyio
 async def test_find_system_config_raises_when_none(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 0, "issues": []})
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"count": 0, "issues": []})
     async with JiraClient() as client:
         with pytest.raises(BootstrapIncompleteError):
             await watermark.find_system_config_issue(client, "PROJ")
@@ -121,7 +121,7 @@ async def test_write_watermark_issues_put_with_all_fields(httpx_mock: HTTPXMock)
 @pytest.mark.anyio
 async def test_check_bootstrap_passes_when_filters_clean(httpx_mock: HTTPXMock) -> None:
     for _ in MANDATORY_FILTERS:
-        httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 0, "issues": []})
+        httpx_mock.add_response(url=_SEARCH_URL_RE, json={"count": 0, "issues": []})
     async with JiraClient() as client:
         await watermark.check_bootstrap(client)
 
@@ -129,8 +129,8 @@ async def test_check_bootstrap_passes_when_filters_clean(httpx_mock: HTTPXMock) 
 @pytest.mark.anyio
 async def test_check_bootstrap_raises_when_filter_unamended(httpx_mock: HTTPXMock) -> None:
     for _ in MANDATORY_FILTERS[:-1]:
-        httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 0, "issues": []})
-    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"total": 1, "issues": [{"key": SYS_KEY}]})
+        httpx_mock.add_response(url=_SEARCH_URL_RE, json={"count": 0, "issues": []})
+    httpx_mock.add_response(url=_SEARCH_URL_RE, json={"count": 1, "issues": [{"key": SYS_KEY}]})
     async with JiraClient() as client:
         with pytest.raises(BootstrapIncompleteError) as exc:
             await watermark.check_bootstrap(client)
