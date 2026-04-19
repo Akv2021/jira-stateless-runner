@@ -161,9 +161,12 @@ FILTERS: tuple[FilterSpec, ...] = (
     FilterSpec(
         "IP-Stale-Eligible",
         "T9 stale-scan eligibility (JiraImplementation.md §9.2 Solo profile)",
+        # Has Had Test is modelled as a string-valued single-select with
+        # option "false"; the literal must be quoted because bare `false`
+        # is a reserved JQL token (Atlassian JQL parser error 400).
         "issuetype != Sub-task AND project in (COREPREP, EXTENDED) "
         'AND "Lifecycle" = "Active" AND "Last Worked At" <= -90d '
-        'AND "Has Had Test" = false AND labels != "runner-system" '
+        'AND "Has Had Test" = "false" AND labels != "runner-system" '
         "AND status not in (Done)",
     ),
 )
@@ -405,8 +408,8 @@ class Provisioner:
         ists_id = str(values[0]["issueTypeScreenScheme"]["id"])
         r2 = await self._request(
             "GET",
-            f"/rest/api/3/issuetypescreenscheme/{ists_id}/mapping",
-            params={"maxResults": 100},
+            "/rest/api/3/issuetypescreenscheme/mapping",
+            params={"issueTypeScreenSchemeId": ists_id, "maxResults": 100},
         )
         r2.raise_for_status()
         screen_scheme_ids: set[str] = {
