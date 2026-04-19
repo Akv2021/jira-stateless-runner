@@ -4,7 +4,7 @@ Per docs/ExternalRunner.md §5.2, one comment is posted on the parent
 Unit (not the Subtask) per executed transition. The canonical 5-line
 template is::
 
-    [ZTMOS][T2] Learn#1 → Revise#1
+    [Runner][T2] Learn#1 → Revise#1
       RevisionDone: 0 → 0 (target 3)
       Outcome: Pass
       DueDate(Revise#1): 2026-04-22  (RevisionGap[1] = 2bd)
@@ -68,7 +68,7 @@ def format_comment(event: TransitionEvent) -> str:
     placeholders. The final footer line is always present.
     """
     lines: list[str] = [
-        f"[ZTMOS][{event.transition_id}] {event.source_label} {_ARROW} {event.target_label}",
+        f"[Runner][{event.transition_id}] {event.source_label} {_ARROW} {event.target_label}",
         f"  RevisionDone: {event.revision_done_pre} "
         f"{_ARROW} {event.revision_done_post} (target {event.revision_target})",
     ]

@@ -39,7 +39,7 @@ def _jql_updated_since(project_key: str, since_iso: str | None) -> str:
     changelog ``since_id`` filter tolerates clock skew without
     duplicating side-effects.
     """
-    base = f'project = "{project_key}" AND labels != "ztmos-system"'
+    base = f'project = "{project_key}" AND labels != "runner-system"'
     if since_iso:
         # Jira JQL requires "yyyy-MM-dd HH:mm" (no T, no timezone).
         jql_ts = since_iso.replace("T", " ")[:16]

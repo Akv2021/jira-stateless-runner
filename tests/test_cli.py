@@ -115,7 +115,7 @@ async def test_with_health_tracking_closes_alert_after_streak(
 def test_jql_updated_since_includes_clause() -> None:
     jql = cli._jql_updated_since("PROJ", "2026-04-20T09:00:00+00:00")
     assert "PROJ" in jql
-    assert 'labels != "ztmos-system"' in jql
+    assert 'labels != "runner-system"' in jql
     assert 'updated >= "2026-04-20 09:00"' in jql
 
 

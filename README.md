@@ -36,11 +36,11 @@ construction; every restart re-derives its worldview from Jira fields.
 |---|---|---|
 | Custom fields on the Unit (`Stage`, `WorkType`, `Lifecycle`, `Revision Done`, …) | Domain tuple read on every dispatch | Issue payload |
 | `idem:<hex>` Jira labels on Sub-tasks | Exactly-once replay guard per transition (§5.3) | Sub-task labels |
-| **System Config issue** (`ztmos-system` label) | Polling watermark + runner version + open-alert URL (§3.2–§3.4) | One-per-project Task issue |
-| GitHub Actions Cache (`ztmos-health-state`) | **Ephemeral** health counters only; eviction is self-healing | Never used for correctness-critical state |
+| **System Config issue** (`runner-system` label) | Polling watermark + runner version + open-alert URL (§3.2–§3.4) | One-per-project Task issue |
+| GitHub Actions Cache (`runner-health-state`) | **Ephemeral** health counters only; eviction is self-healing | Never used for correctness-critical state |
 
 The bootstrap self-check (`runner.watermark.check_bootstrap`) enforces that
-every user-facing saved filter excludes `labels = "ztmos-system"` and fails
+every user-facing saved filter excludes `labels = "runner-system"` and fails
 fast with `BootstrapIncompleteError` on first run otherwise.
 
 ## 3. System Architecture
@@ -75,7 +75,7 @@ watermark helpers consume it through async methods (`get_issue`,
   (`runner/idempotency.py`). The 12-hex digest is affixed as an `idem:<hex>`
   label on the Sub-task created by the transition; retries short-circuit on a
   JQL `parent = <unit> AND labels = idem:<hex>` existence check.
-- **Audit comments** (`runner/audit.py`) post a Layer-2 `[ZTMOS]` marker on the
+- **Audit comments** (`runner/audit.py`) post a Layer-2 `[Runner]` marker on the
   parent Unit carrying the transition-id, key, and the pre/post tuple so every
   state change is self-describing on the Unit page.
 

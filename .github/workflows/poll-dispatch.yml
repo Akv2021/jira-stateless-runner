@@ -5,7 +5,7 @@
 # Timeout sits comfortably under the cron interval so a stuck run never
 # blocks the next tick indefinitely.
 
-name: ztmos-poll-dispatch
+name: runner-poll-dispatch
 
 on:
   schedule:
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ztmos-poll
+  group: runner-poll
   cancel-in-progress: false
 
 permissions:
@@ -57,10 +57,10 @@ jobs:
       - name: Restore ephemeral health cache
         uses: actions/cache@v4
         with:
-          path: .ztmos-state/
-          key: ztmos-state-${{ github.run_id }}
+          path: .runner-state/
+          key: runner-state-${{ github.run_id }}
           restore-keys: |
-            ztmos-state-
+            runner-state-
 
       - name: Poll and dispatch
         run: python -m runner poll
@@ -75,5 +75,5 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: .ztmos-state/
-          key: ztmos-state-${{ github.run_id }}
+          path: .runner-state/
+          key: runner-state-${{ github.run_id }}

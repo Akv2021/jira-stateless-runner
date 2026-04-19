@@ -7,12 +7,12 @@ Per docs/ExternalRunner.md §3.2-§3.4:
 - ``write_field()`` -> single-field write, used by ``health.py`` to mirror
   the open-alert URL into the System Config for cache-eviction durability.
 - ``check_bootstrap()`` -> §3.3 self-check that every user-facing saved
-  filter excludes ``labels = "ztmos-system"``. Raises
+  filter excludes ``labels = "runner-system"``. Raises
   ``BootstrapIncompleteError`` listing any un-amended filters so the
   runner fails fast at first invocation rather than silently polluting
   reports at read-time.
 
-The System Config issue is located by the ``labels = "ztmos-system"``
+The System Config issue is located by the ``labels = "runner-system"``
 marker under the configured project; exactly one must exist.
 """
 
@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Final
 if TYPE_CHECKING:
     from runner.jira_client import JiraClient
 
-SYSTEM_LABEL: Final[str] = "ztmos-system"
+SYSTEM_LABEL: Final[str] = "runner-system"
 """Label marking the System Config issue (§3.2)."""
 
 WATERMARK_FIELD_ID: Final[str] = "Last Processed Changelog Id"
@@ -42,7 +42,7 @@ MANDATORY_FILTERS: Final[tuple[str, ...]] = (
     "IP-Velocity-LT",
     "IP-Stale-Eligible",
 )
-"""Saved filters that MUST exclude ``labels = "ztmos-system"`` (§3.3).
+"""Saved filters that MUST exclude ``labels = "runner-system"`` (§3.3).
 
 ``IP-Now`` is excluded because its ``issuetype = Sub-task`` clause
 already precludes the System Config issue.
@@ -155,7 +155,7 @@ async def check_bootstrap(client: JiraClient, filters: tuple[str, ...] = MANDATO
     """Run the §3.3 self-check: every filter must exclude the System Config.
 
     For each name in ``filters``, issues the JQL
-    ``filter = "<name>" AND labels = "ztmos-system"`` against Jira. Any
+    ``filter = "<name>" AND labels = "runner-system"`` against Jira. Any
     non-zero hit means the filter was never amended, and the runner
     aborts with ``BootstrapIncompleteError`` listing every offender in
     one pass so the operator can remediate them all before retrying.

@@ -126,7 +126,7 @@ _T2_EVENT = TransitionEvent(
 )
 
 _EXPECTED_T2_COMMENT = (
-    "[ZTMOS][T2] Learn#1 \u2192 Revise#1\n"
+    "[Runner][T2] Learn#1 \u2192 Revise#1\n"
     "  RevisionDone: 0 \u2192 0 (target 3)\n"
     "  Outcome: Pass\n"
     "  DueDate(Revise#1): 2026-04-22  (RevisionGap[1] = 2bd)\n"

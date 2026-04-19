@@ -1,7 +1,7 @@
 """Dead-man's-switch state machine (docs/ExternalRunner.md §6.3-§6.4).
 
 State layout mirrors the JSON blob persisted in GH Actions Cache under
-``ztmos-health-state`` (§3.5). On failure, ``consecutive_failures``
+``runner-health-state`` (§3.5). On failure, ``consecutive_failures``
 increments and the classified failure kind maps through ``THRESHOLDS``
 to decide whether to open a GitHub alert issue via ``gh issue create``;
 the open issue URL is mirrored into the Jira System Config for
@@ -35,7 +35,7 @@ THRESHOLDS: Final[dict[str, int]] = {
 }
 """Per-kind failure thresholds (§6.3). ``http_401`` / ``logic`` are stop-the-line."""
 
-_DEFAULT_STATE_PATH: Final[Path] = Path(".ztmos-state/health.json")
+_DEFAULT_STATE_PATH: Final[Path] = Path(".runner-state/health.json")
 
 
 @dataclass
@@ -74,7 +74,7 @@ def classify(exc: BaseException) -> str:
 
 
 def load_state(path: Path | None = None) -> HealthState:
-    """Read ``health.json`` at ``path`` (default ``.ztmos-state/health.json``)."""
+    """Read ``health.json`` at ``path`` (default ``.runner-state/health.json``)."""
     target = path if path is not None else _DEFAULT_STATE_PATH
     if not target.exists():
         return HealthState()
@@ -130,9 +130,9 @@ def open_alert(state: HealthState, error: BaseException) -> str:
             "issue",
             "create",
             "--title",
-            f"ZTMOS System Alert: {kind} ({count} consecutive)",
+            f"Runner System Alert: {kind} ({count} consecutive)",
             "--label",
-            "system-alert,ztmos",
+            "system-alert,runner",
             "--body",
             body,
         ],
