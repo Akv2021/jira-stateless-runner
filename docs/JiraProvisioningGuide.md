@@ -270,6 +270,14 @@ curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '
 }'
 ```
 
+**Updating existing filters** — `ensure_filters` keys off filter name, so reruns of the provisioner are additive by default. To rewrite a filter whose `jql` or `description` has drifted from `FILTERS` (for example, when upgrading from the pre-v0.7.9 `labels != "runner-system"` clause), pass `--update-filters`:
+
+```bash
+python -m scripts.provision_jira --update-filters
+```
+
+The flag issues a `PUT /rest/api/3/filter/{id}` only for filters whose body differs from the spec; in-sync filters are left alone so repeat runs remain no-ops.
+
 **Post-create verification** — the External Runner's `python -m runner poll` bootstrap self-check ([`ExternalRunner.md §3.3`](./ExternalRunner.md)) queries each filter by name and fails fast with `BootstrapIncompleteError` if any view still matches the System Config issue. To pre-empt that, run:
 
 ```bash

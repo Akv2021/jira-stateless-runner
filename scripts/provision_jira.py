@@ -232,6 +232,9 @@ class Summary:
     system_configs_existed: dict[str, str] = field(default_factory=dict)
     filters_created: dict[str, int] = field(default_factory=dict)
     filters_existed: dict[str, int] = field(default_factory=dict)
+    # Filters whose JQL/description was rewritten during this run (only
+    # populated when the caller passed ``--update-filters``).
+    filters_updated: dict[str, int] = field(default_factory=dict)
     sprints_created: dict[str, int] = field(default_factory=dict)
     sprints_existed: dict[str, int] = field(default_factory=dict)
     sprints_missing_boards: list[str] = field(default_factory=list)
@@ -247,9 +250,16 @@ class Summary:
 class Provisioner:
     """Owns one authenticated ``httpx.AsyncClient`` and drives Part A."""
 
-    def __init__(self, client: httpx.AsyncClient, account_id: str) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        account_id: str,
+        *,
+        update_filters: bool = False,
+    ) -> None:
         self._client = client
         self._account_id = account_id
+        self._update_filters = update_filters
         self.summary = Summary()
         # Populated by ensure_fields(); consumed by the screen-attach and
         # default-value steps so they don't re-scan the whole site.
@@ -617,21 +627,54 @@ class Provisioner:
 
     # ---- Saved filters (A.5) -------------------------------------------
     async def ensure_filters(self) -> None:
+        """Reconcile the seven saved filters against ``FILTERS``.
+
+        Default behaviour is additive: missing filters are POSTed, existing
+        ones are left untouched (name is the primary key). When the caller
+        sets ``update_filters=True``, an existing filter whose ``jql`` or
+        ``description`` has drifted from the spec is rewritten via
+        ``PUT /rest/api/3/filter/{id}``; a filter whose body already
+        matches is left alone so reruns are no-ops.
+        """
         for spec in FILTERS:
             r = await self._request(
                 "GET",
                 "/rest/api/3/filter/search",
-                params={"filterName": spec.name, "maxResults": 10},
+                params={
+                    "filterName": spec.name,
+                    "maxResults": 10,
+                    "expand": "jql,description",
+                },
             )
             r.raise_for_status()
             matches = [f for f in r.json().get("values", []) if f.get("name") == spec.name]
             if matches:
-                self.summary.filters_existed[spec.name] = int(matches[0]["id"])
+                existing = matches[0]
+                filter_id = int(existing["id"])
+                if self._update_filters and self._filter_drifted(existing, spec):
+                    body = {
+                        "name": spec.name,
+                        "description": spec.description,
+                        "jql": spec.jql,
+                    }
+                    r_put = await self._request("PUT", f"/rest/api/3/filter/{filter_id}", json=body)
+                    r_put.raise_for_status()
+                    self.summary.filters_updated[spec.name] = filter_id
+                else:
+                    self.summary.filters_existed[spec.name] = filter_id
                 continue
             body = {"name": spec.name, "description": spec.description, "jql": spec.jql}
             r2 = await self._request("POST", "/rest/api/3/filter", json=body)
             r2.raise_for_status()
             self.summary.filters_created[spec.name] = int(r2.json()["id"])
+
+    @staticmethod
+    def _filter_drifted(existing: dict[str, Any], spec: FilterSpec) -> bool:
+        """True when the live filter's jql/description differs from ``spec``."""
+        return (
+            str(existing.get("jql", "")).strip() != spec.jql.strip()
+            or str(existing.get("description", "")).strip() != spec.description.strip()
+        )
 
     # ---- Boards + Cycle 1 Sprint (A.6) ---------------------------------
     async def ensure_sprints(self) -> None:
@@ -713,6 +756,7 @@ def print_summary(summary: Summary) -> None:
     print(_fmt_pairs("System Config issues existed", dict(summary.system_configs_existed)))
     print(_fmt_pairs("Filters created", dict(summary.filters_created)))
     print(_fmt_pairs("Filters existed", dict(summary.filters_existed)))
+    print(_fmt_pairs("Filters updated", dict(summary.filters_updated)))
     print(_fmt_pairs("Sprints created", dict(summary.sprints_created)))
     print(_fmt_pairs("Sprints existed", dict(summary.sprints_existed)))
     if summary.sprints_missing_boards:
@@ -811,6 +855,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=20.0,
         help="Per-request timeout in seconds (default: 20).",
     )
+    parser.add_argument(
+        "--update-filters",
+        action="store_true",
+        help=(
+            "Rewrite saved filters whose jql/description has drifted from "
+            "FILTERS. Without this flag the script only adds missing filters "
+            "and leaves existing ones untouched."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -834,7 +887,11 @@ async def _amain(args: argparse.Namespace) -> int:
         headers=headers,
         timeout=timeout,
     ) as client:
-        prov = Provisioner(client, settings.jira_account_id)
+        prov = Provisioner(
+            client,
+            settings.jira_account_id,
+            update_filters=args.update_filters,
+        )
         exit_code = 0
         try:
             await prov.run()
