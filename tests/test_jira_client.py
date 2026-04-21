@@ -254,6 +254,72 @@ async def test_create_subtask_translates_extra_fields(httpx_mock: HTTPXMock) -> 
 
 
 @pytest.mark.anyio
+async def test_create_subtask_retries_without_story_points_on_screen_error(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Tenant field-config scheme that hides Story Points must not wedge Rule 1."""
+    import json as _json
+
+    # First POST: Jira rejects the SP field.
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue",
+        method="POST",
+        status_code=400,
+        json={
+            "errors": {
+                "customfield_10111": (
+                    "Field 'customfield_10111' cannot be set. "
+                    "It is not on the appropriate screen, or unknown."
+                )
+            }
+        },
+    )
+    # Second POST: retry without SP succeeds.
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue", method="POST", json={"key": "PROJ-99"}
+    )
+    async with JiraClient() as client:
+        result = await client.create_subtask(
+            parent_key="PROJ-42",
+            summary="child",
+            labels=["idem:abc"],
+            story_points=2,
+        )
+    assert result == {"key": "PROJ-99"}
+    posts = [
+        r for r in httpx_mock.get_requests() if r.method == "POST" and r.url.path.endswith("/issue")
+    ]
+    assert len(posts) == 2
+    first_body = _json.loads(posts[0].content)["fields"]
+    assert first_body.get("customfield_10111") == 2
+    second_body = _json.loads(posts[1].content)["fields"]
+    assert "customfield_10111" not in second_body
+    # All other fields preserved.
+    assert second_body["parent"] == {"key": "PROJ-42"}
+    assert second_body["summary"] == "child"
+    assert second_body["labels"] == ["idem:abc"]
+
+
+@pytest.mark.anyio
+async def test_create_subtask_propagates_unrelated_400(httpx_mock: HTTPXMock) -> None:
+    """400 errors unrelated to Story Points must still surface as failures."""
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/rest/api/3/issue",
+        method="POST",
+        status_code=400,
+        json={"errors": {"summary": "Summary is required."}},
+    )
+    async with JiraClient() as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.create_subtask(
+                parent_key="PROJ-42",
+                summary="",
+                labels=["idem:abc"],
+                story_points=2,
+            )
+
+
+@pytest.mark.anyio
 async def test_get_issue_rewrites_custom_field_ids_to_display_names(
     httpx_mock: HTTPXMock,
 ) -> None:

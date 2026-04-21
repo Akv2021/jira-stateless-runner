@@ -33,8 +33,33 @@ from tenacity import (
 )
 
 from runner.config import Settings, get_settings
+from runner.logging_ext import get_logger
 
 _RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_LOG = get_logger(__name__)
+
+
+def _is_story_points_screen_error(
+    exc: httpx.HTTPStatusError, story_points: int | None, story_points_field_id: str | None
+) -> bool:
+    """Return True when the 400 response is Jira's Story Points screen gate.
+
+    Tenants whose Sub-task field configuration or screen scheme does
+    not expose the ``Story Points`` custom field respond with
+    ``400 {"errors": {"customfield_XXXXX": "Field 'customfield_XXXXX'
+    cannot be set. It is not on the appropriate screen, or unknown."}}``
+    where ``customfield_XXXXX`` is the resolved Story Points id. The
+    caller uses this signal to retry without the Story Points clause
+    rather than fail the whole dispatch.
+    """
+    if story_points is None or story_points_field_id is None or exc.response.status_code != 400:
+        return False
+    try:
+        errors = exc.response.json().get("errors") or {}
+    except ValueError:
+        return False
+    msg = errors.get(story_points_field_id)
+    return isinstance(msg, str) and "cannot be set" in msg
 
 
 class IssueNotFoundError(Exception):
@@ -382,6 +407,15 @@ class JiraClient:
         merged last and can override any field the runner sets by
         default; intended for per-rule additions (Work Type, Due Date)
         from ``runner.rules``.
+
+        ``story_points`` is best-effort: if Jira rejects the initial
+        POST with a ``"Story Points" cannot be set`` error (tenant
+        screens / field-config scheme do not expose the field on
+        Sub-task), the Sub-task is re-created without the Story
+        Points clause and a WARNING is logged. Rule 1 / 2 still
+        advance; the velocity analytics documented in
+        `LivingRequirements.md §6 FR11` degrade gracefully rather
+        than wedge the entire poll.
         """
         from runner.config import get_settings as _get_settings
 
@@ -397,8 +431,20 @@ class JiraClient:
             fields["Story Points"] = story_points
         if extra_fields:
             fields.update(extra_fields)
-        translated = await self._translate_field_keys(fields)
-        response = await self._request("POST", "/rest/api/3/issue", json={"fields": translated})
+        try:
+            translated = await self._translate_field_keys(fields)
+            response = await self._request("POST", "/rest/api/3/issue", json={"fields": translated})
+        except httpx.HTTPStatusError as exc:
+            sp_field_id = (await self.get_field_map()).get("Story Points")
+            if not _is_story_points_screen_error(exc, story_points, sp_field_id):
+                raise
+            _LOG.warning(
+                "story_points_unsettable_fallback",
+                extra={"parent_key": parent_key, "story_points": story_points},
+            )
+            fields.pop("Story Points", None)
+            translated = await self._translate_field_keys(fields)
+            response = await self._request("POST", "/rest/api/3/issue", json={"fields": translated})
         result: dict[str, Any] = response.json()
         return result
 
