@@ -10,7 +10,12 @@ not surface changelog IDs directly, so the runner polls the per-issue
 Classification is intentionally small:
 
 - ``is_new_issue`` -- the issue's ``created`` timestamp equals the entry's
-  ``created`` timestamp (Jira emits a synthetic creation entry at birth).
+  ``created`` timestamp. Note that Jira Cloud Free does not emit a real
+  changelog entry on issue creation, so this branch fires only on
+  deployments that do (Jira Cloud Premium workflow post-functions, or
+  a Jira Automation rule that writes a marker field at creation). For
+  free-tier deployments ``runner.cli._maybe_synthesise_creation``
+  mints the missing event outside this classifier.
 - ``is_status_change_to_done`` -- the entry carries a ``status`` field
   delta whose ``to``-string is the terminal status name ``"Done"``.
 - Everything else falls through as a plain event with both booleans
