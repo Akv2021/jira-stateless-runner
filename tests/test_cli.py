@@ -118,13 +118,16 @@ async def test_with_health_tracking_closes_alert_after_streak(
 def test_jql_updated_since_includes_clause() -> None:
     jql = cli._jql_updated_since("PROJ", "2026-04-20T09:00:00+00:00")
     assert "PROJ" in jql
-    assert 'labels != "runner-system"' in jql
+    # System-config exclusion must include the IS EMPTY branch so Units
+    # created without any labels (the Jira Cloud default) still match.
+    assert '(labels IS EMPTY OR labels != "runner-system")' in jql
     assert 'updated >= "2026-04-20 09:00"' in jql
 
 
 def test_jql_updated_since_omits_clause_when_no_timestamp() -> None:
     jql = cli._jql_updated_since("PROJ", None)
     assert "updated >=" not in jql
+    assert "labels IS EMPTY" in jql
 
 
 @pytest.mark.anyio
