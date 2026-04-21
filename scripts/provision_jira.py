@@ -69,10 +69,15 @@ class FieldSpec:
     options: tuple[str, ...] = ()
 
 
-# 16 custom fields per docs/JiraProvisioningGuide.md §A.2.
+# 17 custom fields per docs/JiraProvisioningGuide.md §A.2.
 # "Has Had Test" is modelled as a string-valued single-select with
 # options ("false", "true") so the IP-Stale-Eligible JQL clause
 # `"Has Had Test" = false` matches via Jira's text-option semantics.
+# "Story Points" is runner-owned (distinct from the Jira software-template
+# built-in); listing it here guarantees it is attached to every project
+# screen via ``ensure_screens`` so operators can tune velocity analytics
+# from the UI regardless of the tenant's built-in field-configuration
+# scheme.
 FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("Stage", _SELECT, _S_MULTISEL, ("Beginner", "Intermediate", "Advanced")),
     FieldSpec("Work Type", _SELECT, _S_MULTISEL, ("Learn", "Revise")),
@@ -82,6 +87,7 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("Revision Done", _FLOAT, _S_NUM),
     FieldSpec("Outcome", _SELECT, _S_MULTISEL, ("Pass", "Regress")),
     FieldSpec("Has Had Test", _SELECT, _S_MULTISEL, ("false", "true")),
+    FieldSpec("Story Points", _FLOAT, _S_NUM),
     FieldSpec("Last Worked At", _DATETIME, _S_DT),
     FieldSpec("Last Transitioned At", _DATETIME, _S_DT),
     FieldSpec("Paused At", _DATETIME, _S_DT),
