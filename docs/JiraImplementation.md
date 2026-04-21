@@ -283,13 +283,13 @@ All queries assume Sub-task labels (`learn` / `revise` / `test`) follow §2. Fil
 | View ([`LivingRequirements.md §12`](./LivingRequirements.md)) | Saved-filter name | JQL |
 |---|---|---|
 | §12.1 Now/Due | `IP-Now` | `issuetype = Sub-task AND status in ("To Do", "In Progress") AND (duedate is EMPTY OR duedate <= 3d) ORDER BY duedate ASC, priority DESC` |
-| §12.2 Current Working Set | `IP-Working-Set` | `issuetype != Sub-task AND "Lifecycle" = "Active" AND labels != "runner-system" ORDER BY "Last Worked At" DESC` |
-| §12.3 Stale View | `IP-Stale` | `issuetype != Sub-task AND "Lifecycle" = "Active" AND "Last Worked At" <= -90d AND labels != "runner-system" ORDER BY "Last Worked At" ASC` |
-| §12.4 Paused Queue (FIFO) | `IP-Paused-FIFO` | `issuetype != Sub-task AND "Lifecycle" = "Paused" AND labels != "runner-system" ORDER BY "Paused At" ASC` |
-| §12.5 Archived | `IP-Archive` | `issuetype != Sub-task AND "Lifecycle" = "Archived" AND labels != "runner-system" ORDER BY updated DESC` |
-| §12.6 Progress Velocity source | `IP-Velocity-LT` | `issuetype != Sub-task AND "Last Transitioned At" >= -30d AND labels != "runner-system" ORDER BY "Last Transitioned At" DESC` |
+| §12.2 Current Working Set | `IP-Working-Set` | `issuetype != Sub-task AND "Lifecycle" = "Active" AND (labels IS EMPTY OR labels != "runner-system") ORDER BY "Last Worked At" DESC` |
+| §12.3 Stale View | `IP-Stale` | `issuetype != Sub-task AND "Lifecycle" = "Active" AND "Last Worked At" <= -90d AND (labels IS EMPTY OR labels != "runner-system") ORDER BY "Last Worked At" ASC` |
+| §12.4 Paused Queue (FIFO) | `IP-Paused-FIFO` | `issuetype != Sub-task AND "Lifecycle" = "Paused" AND (labels IS EMPTY OR labels != "runner-system") ORDER BY "Paused At" ASC` |
+| §12.5 Archived | `IP-Archive` | `issuetype != Sub-task AND "Lifecycle" = "Archived" AND (labels IS EMPTY OR labels != "runner-system") ORDER BY updated DESC` |
+| §12.6 Progress Velocity source | `IP-Velocity-LT` | `issuetype != Sub-task AND "Last Transitioned At" >= -30d AND (labels IS EMPTY OR labels != "runner-system") ORDER BY "Last Transitioned At" DESC` |
 
-**System-artefact exclusion (`labels != "runner-system"`).** The External Runner ([`ExternalRunner.md §3`](./ExternalRunner.md)) stores its polling watermark in a dedicated Jira issue labelled `runner-system`. That issue shares the `Task`-derived parent-issue type with Unit-bearing issue types and would otherwise surface in `IP-Working-Set`, `IP-Stale`, `IP-Paused-FIFO`, `IP-Archive`, and `IP-Velocity-LT`. Every non-Sub-task filter above appends `AND labels != "runner-system"` to exclude it. `IP-Now` is already safe because it filters to `issuetype = Sub-task`. Deployments that do not use the External Runner can omit these clauses with no other impact; the External Runner's `python -m runner poll` bootstrap self-check will refuse to run until every affected filter has been amended ([`ExternalRunner.md §3.3`](./ExternalRunner.md)).
+**System-artefact exclusion (`(labels IS EMPTY OR labels != "runner-system")`).** The External Runner ([`ExternalRunner.md §3`](./ExternalRunner.md)) stores its polling watermark in a dedicated Jira issue labelled `runner-system`. That issue shares the `Task`-derived parent-issue type with Unit-bearing issue types and would otherwise surface in `IP-Working-Set`, `IP-Stale`, `IP-Paused-FIFO`, `IP-Archive`, and `IP-Velocity-LT`. Every non-Sub-task filter above appends `AND (labels IS EMPTY OR labels != "runner-system")` to exclude it — the `IS EMPTY` disjunct is required because Jira's JQL drops issues whose `labels` is unset from bare `labels != "..."` matches, which would hide freshly-created Units. `IP-Now` is already safe because it filters to `issuetype = Sub-task`. Deployments that do not use the External Runner can omit these clauses with no other impact; the External Runner's `python -m runner poll` bootstrap self-check will refuse to run until every affected filter has been amended ([`ExternalRunner.md §3.3`](./ExternalRunner.md)).
 
 **T9 eligibility filter (used by Rule 4):**
 
@@ -299,14 +299,14 @@ Name: `IP-Stale-Eligible`
 issuetype != Sub-task
 AND "Lifecycle" = "Active"
 AND "Last Worked At" <= -90d
-AND labels != "runner-system"
+AND (labels IS EMPTY OR labels != "runner-system")
 AND issueFunction not in hasSubtasks("labels = test")
 AND issueFunction not in hasSubtasks("status in (\"To Do\", \"In Progress\")")
 ```
 
 Notes on the above:
 - The first three clauses encode [`ImplementationTestMatrix.md §4`](./ImplementationTestMatrix.md) row E1 predicate `K ≠ Independent ∧ L = Active ∧ S = true`. `K ≠ Independent` is satisfied implicitly when Rule 4 runs only in `CORE-PREP` and `EXTENDED` projects (§1); Independent projects disable Rule 4.
-- The `labels != "runner-system"` clause excludes the External Runner's System Config issue ([`ExternalRunner.md §3`](./ExternalRunner.md)); omit this clause on deployments that do not use the External Runner.
+- The `(labels IS EMPTY OR labels != "runner-system")` clause excludes the External Runner's System Config issue ([`ExternalRunner.md §3`](./ExternalRunner.md)) without hiding Units whose `labels` is unset; omit the clause on deployments that do not use the External Runner.
 - The `hasSubtasks("labels = test")` clause encodes the **lifetime-idempotency guard** `H = false` ([`LivingRequirements.md §5.2`](./LivingRequirements.md) T9). It matches on any `Test`-labelled Sub-task, in any status (`To Do`, `In Progress`, `Done`, `Backlog`) and regardless of whether it was later deleted, as long as Jira retains its history. Implementations that prune Sub-task history must switch to a durable `Has Had Test` custom-field flag on the Parent, set by Rule 4 the moment it creates a Test Sub-task ([`LivingRequirements.md §5.2`](./LivingRequirements.md) T9 implementation note).
 - The last clause encodes `O = false` (no outstanding actionable Sub-task).
 - `issueFunction` comes from ScriptRunner; on vanilla Jira Cloud, use the smart-value equivalent inside the Rule 4 body instead of the JQL.
@@ -432,7 +432,7 @@ AND project in (CORE-PREP, EXTENDED)
 AND "Lifecycle" = "Active"
 AND "Last Worked At" <= -90d
 AND "Has Had Test" = false
-AND labels != "runner-system"
+AND (labels IS EMPTY OR labels != "runner-system")
 AND status not in (Done)
 ```
 

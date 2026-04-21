@@ -55,10 +55,10 @@ Phase 4:                                          [M10]─[M11]─[M12]
 | 1.A.3 | Attach fields to `Problem / Concept / Implementation / Pattern / Debug` issue-type screens; System Config fields → `Task` only | [Guide §A.3](./JiraProvisioningGuide.md) | 20 min |
 | 1.A.4 | Create **System Config issue** per project with `labels: ["runner-system", "hidden"]`; Phase 3 M8 populates the watermark on first poll | [Guide §A.4](./JiraProvisioningGuide.md) | 5 min |
 | 1.A.5 | Create the **seven v0.7.9 saved JQL filters** via `POST /rest/api/3/filter` | [Guide §A.5](./JiraProvisioningGuide.md) | 15 min |
-| 1.A.6 | Verify the six non-`IP-Now` filters all contain `AND labels != "runner-system"` | [Guide §A.5](./JiraProvisioningGuide.md) | 5 min |
+| 1.A.6 | Verify the six non-`IP-Now` filters all contain `AND (labels IS EMPTY OR labels != "runner-system")` | [Guide §A.5](./JiraProvisioningGuide.md) | 5 min |
 | 1.A.7 | Create `Cycle 1 — bootstrap` Sprint per project via board REST endpoints | [Guide §A.6](./JiraProvisioningGuide.md) | 5 min |
 
-**Filter set (v0.7.9):** `IP-Now` · `IP-Working-Set` · `IP-Stale` · `IP-Paused-FIFO` · `IP-Archive` · `IP-Velocity-LT` · `IP-Stale-Eligible`. All six non-`IP-Now` filters include `AND labels != "runner-system"`; `IP-Stale-Eligible` additionally includes `AND "Has Had Test" = false` per the Solo-User Profile ([`JiraImplementation.md §9.2`](./JiraImplementation.md)).
+**Filter set (v0.7.9):** `IP-Now` · `IP-Working-Set` · `IP-Stale` · `IP-Paused-FIFO` · `IP-Archive` · `IP-Velocity-LT` · `IP-Stale-Eligible`. All six non-`IP-Now` filters include `AND (labels IS EMPTY OR labels != "runner-system")`; `IP-Stale-Eligible` additionally includes `AND "Has Had Test" = false` per the Solo-User Profile ([`JiraImplementation.md §9.2`](./JiraImplementation.md)).
 
 ### 1.B — Manual UI configuration ([Guide Part B](./JiraProvisioningGuide.md))
 
@@ -84,7 +84,7 @@ Run rows **E1–E10** of the [Part E verification checklist](./JiraProvisioningG
 - ✅ `CORE-PREP` and `EXTENDED` projects exist (Scrum template)
 - ✅ 16 custom fields provisioned and attached to correct screens
 - ✅ 2 System Config issues exist, each with `labels: ["runner-system", "hidden"]`
-- ✅ 7 v0.7.9 saved JQL filters exist; six carry `AND labels != "runner-system"`; `IP-Stale-Eligible` carries `AND "Has Had Test" = false`
+- ✅ 7 v0.7.9 saved JQL filters exist; six carry `AND (labels IS EMPTY OR labels != "runner-system")`; `IP-Stale-Eligible` carries `AND "Has Had Test" = false`
 - ✅ Rule 3 + three §9.1 manual-trigger buttons configured per project, with `runner-system` exclusion guard
 - ✅ Board swimlanes `Active / Paused / Archived` render; `Cycle 1 — bootstrap` Sprint started
 - ✅ Clicking **Pause** on a test Unit fires Rule 3 → writes `Paused At` → posts audit comment
@@ -345,7 +345,7 @@ gh secret set JIRA_TOKEN    # interactive
 | **Audit comment on every transition** | §5.2 | `[Runner][Tn] <short> · run: <id> · event: <id> · key: idem_<hex>` posted to parent Unit |
 | **INFO-log allow-list** | §8.3 | `summary` / `description` / `comment` NEVER at INFO; DEBUG only |
 | **`gitleaks` clean** | §8.2 | Every commit + every PR |
-| **Mandatory filter-exclusion** | §3.3 | All six non-`IP-Now` filters include `AND labels != "runner-system"` |
+| **Mandatory filter-exclusion** | §3.3 | All six non-`IP-Now` filters include `AND (labels IS EMPTY OR labels != "runner-system")` |
 | **Public-repo posture** | §8.1 | Repo visibility = public; fork-PR approval required |
 | **Rule 3 stays in Jira Automation** | [`JiraImplementation.md §9.1`](./JiraImplementation.md) | Runner does NOT implement T5/T6/T7/T8 timestamp writes |
 | **Stateless-Runner principle** | [`LivingRequirements.md`](./LivingRequirements.md), [`ExternalRunner.md §3`](./ExternalRunner.md) | Jira holds all authoritative state; runner carries no persistent state beyond the watermark mirrored from Jira |
