@@ -124,7 +124,11 @@ class FilterSpec:
 
 
 # Seven v0.7.9 filters per Guide §A.5. Every non-`IP-Now` filter carries
-# the mandatory `labels != "runner-system"` clause per ExternalRunner §3.3.
+# the mandatory runner-system exclusion per ExternalRunner §3.3. The
+# clause is written as ``(labels IS EMPTY OR labels != "runner-system")``
+# because Jira's JQL NULL semantics drop any issue whose ``labels`` is
+# unset from ``labels != "..."`` matches (seen during the Sprint 75
+# validation: fresh Units with no labels were invisible to dashboards).
 FILTERS: tuple[FilterSpec, ...] = (
     FilterSpec(
         "IP-Now",
@@ -137,32 +141,37 @@ FILTERS: tuple[FilterSpec, ...] = (
         "IP-Working-Set",
         "Current Working Set — Active Units (LivingRequirements.md §12.2)",
         'issuetype != Sub-task AND "Lifecycle" = "Active" '
-        'AND labels != "runner-system" ORDER BY "Last Worked At" DESC',
+        'AND (labels IS EMPTY OR labels != "runner-system") '
+        'ORDER BY "Last Worked At" DESC',
     ),
     FilterSpec(
         "IP-Stale",
         "Stale Active Units — 90d idle (LivingRequirements.md §12.3)",
         'issuetype != Sub-task AND "Lifecycle" = "Active" '
-        'AND "Last Worked At" <= -90d AND labels != "runner-system" '
+        'AND "Last Worked At" <= -90d '
+        'AND (labels IS EMPTY OR labels != "runner-system") '
         'ORDER BY "Last Worked At" ASC',
     ),
     FilterSpec(
         "IP-Paused-FIFO",
         "Paused queue — FIFO by Paused At (LivingRequirements.md §12.4)",
         'issuetype != Sub-task AND "Lifecycle" = "Paused" '
-        'AND labels != "runner-system" ORDER BY "Paused At" ASC',
+        'AND (labels IS EMPTY OR labels != "runner-system") '
+        'ORDER BY "Paused At" ASC',
     ),
     FilterSpec(
         "IP-Archive",
         "Archived Units (LivingRequirements.md §12.5)",
         'issuetype != Sub-task AND "Lifecycle" = "Archived" '
-        'AND labels != "runner-system" ORDER BY updated DESC',
+        'AND (labels IS EMPTY OR labels != "runner-system") '
+        "ORDER BY updated DESC",
     ),
     FilterSpec(
         "IP-Velocity-LT",
         "Progress Velocity source — 30-day Last Transitioned At (LivingRequirements.md §12.6)",
         'issuetype != Sub-task AND "Last Transitioned At" >= -30d '
-        'AND labels != "runner-system" ORDER BY "Last Transitioned At" DESC',
+        'AND (labels IS EMPTY OR labels != "runner-system") '
+        'ORDER BY "Last Transitioned At" DESC',
     ),
     FilterSpec(
         "IP-Stale-Eligible",
@@ -172,7 +181,8 @@ FILTERS: tuple[FilterSpec, ...] = (
         # is a reserved JQL token (Atlassian JQL parser error 400).
         "issuetype != Sub-task AND project in (COREPREP, EXTENDED) "
         'AND "Lifecycle" = "Active" AND "Last Worked At" <= -90d '
-        'AND "Has Had Test" = "false" AND labels != "runner-system" '
+        'AND "Has Had Test" = "false" '
+        'AND (labels IS EMPTY OR labels != "runner-system") '
         "AND status not in (Done)",
     ),
 )

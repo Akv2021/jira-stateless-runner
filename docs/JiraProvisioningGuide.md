@@ -198,7 +198,7 @@ curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/issue" -d '{
 
 ### A.5 Create the seven mandatory saved JQL filters (v0.7.9)
 
-Filters are site-scoped; create once. Every non-Sub-task filter below includes the mandatory `AND labels != "runner-system"` exclusion clause per [`JiraImplementation.md §5`](./JiraImplementation.md) v0.7.9 and [`ExternalRunner.md §3.3`](./ExternalRunner.md).
+Filters are site-scoped; create once. Every non-Sub-task filter below includes the mandatory `AND (labels IS EMPTY OR labels != "runner-system")` exclusion clause per [`JiraImplementation.md §5`](./JiraImplementation.md) v0.7.9 and [`ExternalRunner.md §3.3`](./ExternalRunner.md). The `IS EMPTY` disjunct keeps freshly-created Units (which have no labels yet) visible in the view.
 
 **Filter 1 — `IP-Now` (safe; no exclusion needed):**
 
@@ -216,7 +216,7 @@ curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '
 curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '{
   "name": "IP-Working-Set",
   "description": "Current Working Set — Active Units (LivingRequirements.md §12.2)",
-  "jql": "issuetype != Sub-task AND \"Lifecycle\" = \"Active\" AND labels != \"runner-system\" ORDER BY \"Last Worked At\" DESC"
+  "jql": "issuetype != Sub-task AND \"Lifecycle\" = \"Active\" AND (labels IS EMPTY OR labels != \"runner-system\") ORDER BY \"Last Worked At\" DESC"
 }'
 ```
 
@@ -226,7 +226,7 @@ curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '
 curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '{
   "name": "IP-Stale",
   "description": "Stale Active Units — 90d idle (LivingRequirements.md §12.3)",
-  "jql": "issuetype != Sub-task AND \"Lifecycle\" = \"Active\" AND \"Last Worked At\" <= -90d AND labels != \"runner-system\" ORDER BY \"Last Worked At\" ASC"
+  "jql": "issuetype != Sub-task AND \"Lifecycle\" = \"Active\" AND \"Last Worked At\" <= -90d AND (labels IS EMPTY OR labels != \"runner-system\") ORDER BY \"Last Worked At\" ASC"
 }'
 ```
 
@@ -236,7 +236,7 @@ curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '
 curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '{
   "name": "IP-Paused-FIFO",
   "description": "Paused queue — FIFO by Paused At (LivingRequirements.md §12.4)",
-  "jql": "issuetype != Sub-task AND \"Lifecycle\" = \"Paused\" AND labels != \"runner-system\" ORDER BY \"Paused At\" ASC"
+  "jql": "issuetype != Sub-task AND \"Lifecycle\" = \"Paused\" AND (labels IS EMPTY OR labels != \"runner-system\") ORDER BY \"Paused At\" ASC"
 }'
 ```
 
@@ -246,7 +246,7 @@ curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '
 curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '{
   "name": "IP-Archive",
   "description": "Archived Units (LivingRequirements.md §12.5)",
-  "jql": "issuetype != Sub-task AND \"Lifecycle\" = \"Archived\" AND labels != \"runner-system\" ORDER BY updated DESC"
+  "jql": "issuetype != Sub-task AND \"Lifecycle\" = \"Archived\" AND (labels IS EMPTY OR labels != \"runner-system\") ORDER BY updated DESC"
 }'
 ```
 
@@ -256,7 +256,7 @@ curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '
 curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '{
   "name": "IP-Velocity-LT",
   "description": "Progress Velocity source — 30-day Last Transitioned At (LivingRequirements.md §12.6)",
-  "jql": "issuetype != Sub-task AND \"Last Transitioned At\" >= -30d AND labels != \"runner-system\" ORDER BY \"Last Transitioned At\" DESC"
+  "jql": "issuetype != Sub-task AND \"Last Transitioned At\" >= -30d AND (labels IS EMPTY OR labels != \"runner-system\") ORDER BY \"Last Transitioned At\" DESC"
 }'
 ```
 
@@ -266,7 +266,7 @@ curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '
 curl -s "${AUTH[@]}" "${HDR[@]}" -X POST "$JIRA_BASE_URL/rest/api/3/filter" -d '{
   "name": "IP-Stale-Eligible",
   "description": "T9 stale-scan eligibility (JiraImplementation.md §9.2 Solo profile)",
-  "jql": "issuetype != Sub-task AND project in (CORE-PREP, EXTENDED) AND \"Lifecycle\" = \"Active\" AND \"Last Worked At\" <= -90d AND \"Has Had Test\" = false AND labels != \"runner-system\" AND status not in (Done)"
+  "jql": "issuetype != Sub-task AND project in (CORE-PREP, EXTENDED) AND \"Lifecycle\" = \"Active\" AND \"Last Worked At\" <= -90d AND \"Has Had Test\" = false AND (labels IS EMPTY OR labels != \"runner-system\") AND status not in (Done)"
 }'
 ```
 
@@ -586,7 +586,7 @@ After T5/T6, Rule 2 on the next poll may spawn a fresh Learn Subtask if no actio
 | "How fast am I moving?" | `IP-Velocity-LT` |
 | (runner-internal, used by Rule 4) | `IP-Stale-Eligible` |
 
-All six user-facing non-Sub-task filters include the mandatory `AND labels != "runner-system"` exclusion per [`JiraImplementation.md §5`](./JiraImplementation.md) v0.7.9.
+All six user-facing non-Sub-task filters include the mandatory `AND (labels IS EMPTY OR labels != "runner-system")` exclusion per [`JiraImplementation.md §5`](./JiraImplementation.md) v0.7.9.
 
 ### F.5 `poll-dispatch.yml` — Rules 1 & 2 (every 5 minutes)
 
@@ -631,7 +631,7 @@ All six user-facing non-Sub-task filters include the mandatory `AND labels != "r
       AND "Lifecycle" = "Active"
       AND "Last Worked At" <= -90d
       AND "Has Had Test" = false             ← durable lifetime guard
-      AND labels != "runner-system"
+      AND (labels IS EMPTY OR labels != "runner-system")
       AND status not in (Done)
 2. Per match:
       • Create [Stage][Test] Sub-task, due +2 bd (T9)
