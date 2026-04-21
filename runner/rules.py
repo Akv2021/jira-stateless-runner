@@ -72,6 +72,28 @@ Set-once-never-cleared: T5/T11 upgrade, T7 Archive, T13 Regress all
 leave the flag intact so a Unit never re-enters the stale-scan pool.
 """
 
+_DEFAULT_STORY_POINTS: Final[dict[str, int]] = {
+    "learn": 2,
+    "revise": 1,
+    "test": 2,
+}
+"""Per-subtask-kind default Story Points written by Rules 1, 2 and 4.
+
+Centralised so tuning happens in one place; the label carried on the
+Sub-task (``learn`` / ``revise`` / ``test``) is also the map key.
+"""
+
+
+def default_story_points(kind: str) -> int:
+    """Return the spec default Story Points for a Subtask kind label.
+
+    ``kind`` must be one of ``learn``, ``revise`` or ``test`` — the
+    same token emitted as a Sub-task label. Unknown kinds raise
+    ``KeyError`` rather than silently defaulting so typos surface in
+    tests rather than in production velocity analytics.
+    """
+    return _DEFAULT_STORY_POINTS[kind]
+
 
 def _read_field(payload: dict[str, Any], name: str) -> Any:
     """Return ``payload["fields"][name]`` or ``None`` if absent.
@@ -204,7 +226,7 @@ async def rule1_unit_created(
         parent_key=event.issue_key,
         summary=f"[{stage}][Learn] \u2014 {summary}".strip(),
         labels=["learn", idempotency.label_for(key)],
-        story_points=2,
+        story_points=default_story_points("learn"),
     )
     await client.update_issue(event.issue_key, {"Revision Target": rev_target})
     await audit.post(event.issue_key, audit_event, client)
@@ -380,7 +402,7 @@ async def _spawn_revise(
         parent_key=parent_key,
         summary=f"[{stage}][Revise#{index}] \u2014 {unit_summary}".strip(),
         labels=["revise", idem_label],
-        story_points=1,
+        story_points=default_story_points("revise"),
         extra_fields={"duedate": due.isoformat(), "Work Type": "Revise"},
     )
 
@@ -591,7 +613,7 @@ async def rule4_stale_scan(
             parent_key=unit_key,
             summary=f"[{stage}][Test] \u2014 {summary}".strip(),
             labels=["test", idempotency.label_for(key)],
-            story_points=2,
+            story_points=default_story_points("test"),
             extra_fields={"duedate": due.isoformat(), "Work Type": "Test"},
         )
         await client.update_issue(unit_key, {HAS_HAD_TEST_FIELD: True})
@@ -605,6 +627,7 @@ __all__ = [
     "STALE_ELIGIBLE_FILTER",
     "SUBTASK_ISSUE_TYPE",
     "UNIT_ISSUE_TYPES",
+    "default_story_points",
     "rule1_unit_created",
     "rule2_subtask_done",
     "rule4_stale_scan",
