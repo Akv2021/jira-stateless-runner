@@ -176,16 +176,25 @@ class JiraClient:
         return int(count)
 
     async def get_field_map(self) -> dict[str, str]:
-        """Return ``{display_name: field_id}`` for every field on the tenant.
+        """Return ``{display_name: field_id}`` for every **custom** field.
 
         Populates lazily on first call via ``GET /rest/api/3/field`` and
         caches the result on the instance for the lifetime of the
         client. Enables display-name writes (``"Revision Target"``) to
         be translated to Jira-internal IDs (``customfield_10144``) in
         ``update_issue`` / ``create_subtask`` — the M8 field-discovery
-        bootstrap per docs/ExternalRunner.md §3.2. System fields are
-        returned with ``id == name`` so the translator can treat both
-        uniformly.
+        bootstrap per docs/ExternalRunner.md §3.2.
+
+        System fields (``issuetype``, ``created``, ``summary``,
+        ``labels``, ``parent``, …) are intentionally excluded: Jira
+        returns them with ``custom: false`` and a display name that
+        differs from the canonical id (``"Issue Type"`` vs
+        ``issuetype``). Including them would cause
+        ``_translate_payload_fields`` to rewrite ``issuetype`` to
+        ``"Issue Type"`` on reads, silently breaking every consumer
+        that addresses system fields by their canonical lowercase key
+        (``runner.ingestor``, ``runner.rules._summary`` /
+        ``_parent_key``, ``runner.cli._maybe_synthesise_creation``).
         """
         if self._field_map is None:
             response = await self._request("GET", "/rest/api/3/field")
@@ -194,6 +203,8 @@ class JiraClient:
             if isinstance(fields, list):
                 for entry in fields:
                     if not isinstance(entry, dict):
+                        continue
+                    if entry.get("custom") is not True:
                         continue
                     name = entry.get("name")
                     field_id = entry.get("id")

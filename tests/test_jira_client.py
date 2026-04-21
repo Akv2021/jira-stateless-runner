@@ -188,6 +188,23 @@ async def test_get_field_map_builds_name_to_id_dict(httpx_mock: HTTPXMock) -> No
 
 
 @pytest.mark.anyio
+async def test_get_field_map_excludes_system_fields(httpx_mock: HTTPXMock) -> None:
+    """System fields (custom: false) must not enter the translation map.
+
+    Otherwise ``_translate_payload_fields`` rewrites ``issuetype`` →
+    ``"Issue Type"`` and silently breaks ``runner.ingestor`` and
+    ``runner.cli._maybe_synthesise_creation``, which address system
+    fields by their canonical lowercase id.
+    """
+    async with JiraClient() as client:
+        mapping = await client.get_field_map()
+    assert "Issue Type" not in mapping
+    assert "Created" not in mapping
+    assert "Summary" not in mapping
+    assert "Labels" not in mapping
+
+
+@pytest.mark.anyio
 async def test_get_field_map_is_cached_per_client(httpx_mock: HTTPXMock) -> None:
     async with JiraClient() as client:
         await client.get_field_map()
