@@ -245,20 +245,22 @@ Because the System Config issue shares an `issuetype` with Unit-bearing issues i
 **Mandatory addition to every affected filter:**
 
 ```
-AND labels != "runner-system"
+AND (labels IS EMPTY OR labels != "runner-system")
 ```
+
+The `IS EMPTY` disjunct is required: Jira's JQL evaluates `labels != "..."` as a strict inequality that excludes issues whose `labels` is unset, which would otherwise drop every freshly-created Unit from the view.
 
 Affected saved filters (bootstrap owner must amend **all non-safe** rows before the first `workflow_dispatch` run):
 
 | Filter | Current ([`JiraImplementation.md §5`](./JiraImplementation.md)) | Mandatory addition | Bootstrap status |
 |---|---|---|---|
 | `IP-Now` | `issuetype = Sub-task AND status in ...` | — | ✅ Already safe — Sub-task filter excludes System Config |
-| `IP-Working-Set` | `issuetype != Sub-task AND "Lifecycle" = "Active"` | `AND labels != "runner-system"` | ⛔ **Required** |
-| `IP-Stale` | `issuetype != Sub-task AND "Lifecycle" = "Active" AND "Last Worked At" <= -90d` | `AND labels != "runner-system"` | ⛔ **Required** |
-| `IP-Paused-FIFO` | `issuetype != Sub-task AND "Lifecycle" = "Paused"` | `AND labels != "runner-system"` | ⛔ **Required** |
-| `IP-Archive` | `issuetype != Sub-task AND "Lifecycle" = "Archived"` | `AND labels != "runner-system"` | ⛔ **Required** |
-| `IP-Velocity-LT` | `issuetype != Sub-task AND "Last Transitioned At" >= -30d` | `AND labels != "runner-system"` | ⛔ **Required** |
-| `IP-Stale-Eligible` | `issuetype != Sub-task AND "Lifecycle" = "Active" AND ...` | `AND labels != "runner-system"` | ⛔ **Required** |
+| `IP-Working-Set` | `issuetype != Sub-task AND "Lifecycle" = "Active"` | `AND (labels IS EMPTY OR labels != "runner-system")` | ⛔ **Required** |
+| `IP-Stale` | `issuetype != Sub-task AND "Lifecycle" = "Active" AND "Last Worked At" <= -90d` | `AND (labels IS EMPTY OR labels != "runner-system")` | ⛔ **Required** |
+| `IP-Paused-FIFO` | `issuetype != Sub-task AND "Lifecycle" = "Paused"` | `AND (labels IS EMPTY OR labels != "runner-system")` | ⛔ **Required** |
+| `IP-Archive` | `issuetype != Sub-task AND "Lifecycle" = "Archived"` | `AND (labels IS EMPTY OR labels != "runner-system")` | ⛔ **Required** |
+| `IP-Velocity-LT` | `issuetype != Sub-task AND "Last Transitioned At" >= -30d` | `AND (labels IS EMPTY OR labels != "runner-system")` | ⛔ **Required** |
+| `IP-Stale-Eligible` | `issuetype != Sub-task AND "Lifecycle" = "Active" AND ...` | `AND (labels IS EMPTY OR labels != "runner-system")` | ⛔ **Required** |
 
 **Bootstrap enforcement:** the runner's `python -m runner poll` entrypoint executes a one-time self-check on first run — it queries each filter by name and fails fast with a `BootstrapIncompleteError` (and a Layer 1 `ERROR` log naming the unamended filters) if any view still matches the System Config issue. This self-check makes the bootstrap step both **mandatory in policy** and **enforced in code**, aligning with the Solo-User Profile's low-cognitive-load principle ([`JiraImplementation.md §9`](./JiraImplementation.md)) by surfacing omissions at setup rather than at report-time.
 
