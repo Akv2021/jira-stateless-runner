@@ -48,14 +48,26 @@ CUSTOM_FIELD_IDS: Final[dict[str, str]] = {
 Must stay in sync with ``FIELD_MAP_RESPONSE``.
 """
 
+_SYSTEM_FIELDS: Final[tuple[tuple[str, str], ...]] = (
+    # (id, display-name) pairs matching the real Jira response shape.
+    ("issuetype", "Issue Type"),
+    ("created", "Created"),
+    ("summary", "Summary"),
+    ("labels", "Labels"),
+    ("parent", "Parent"),
+    ("status", "Status"),
+)
+
 FIELD_MAP_RESPONSE: Final[list[dict[str, Any]]] = [
     {"id": field_id, "name": name, "custom": True} for name, field_id in CUSTOM_FIELD_IDS.items()
-]
-"""Minimal ``GET /rest/api/3/field`` response body consumed by the autouse mock.
+] + [{"id": fid, "name": dname, "custom": False} for fid, dname in _SYSTEM_FIELDS]
+"""``GET /rest/api/3/field`` response body consumed by the autouse mock.
 
-Real Jira also returns system fields (``summary``, ``labels``, …) but
-the translator passes unknown keys through unchanged, so omitting them
-here keeps the test payload lean without affecting assertions.
+Includes both custom fields (consumed by the runner via display-name
+keys) and a representative slice of system fields (returned by Jira
+with ``custom: false`` and a display name that differs from the
+canonical id). ``get_field_map`` filters to custom fields only so
+system fields keep their canonical lowercase ids on reads.
 """
 
 _FIELD_MAP_URL_RE = re.compile(r".*/rest/api/3/field$")
