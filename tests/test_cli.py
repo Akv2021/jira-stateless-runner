@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 
 from runner import cli, health
+from runner.models import ChangelogEvent
 
 
 @pytest.fixture
@@ -144,3 +147,95 @@ async def test_with_health_tracking_below_threshold_suppresses_alert(
     with pytest.raises(httpx.HTTPStatusError):
         await cli._with_health_tracking(_boom)
     assert opened == []  # 1 < threshold(5) for http_429
+
+
+# ---- T1 creation-event synthesis (Jira Cloud Free bridge) ----------------
+
+
+def _issue(*, key: str = "COREPREP-3", created: str, itype: str = "Problem") -> dict[str, Any]:
+    return {
+        "key": key,
+        "fields": {"issuetype": {"name": itype}, "created": created},
+    }
+
+
+def test_synthesise_creation_fires_for_fresh_issue() -> None:
+    issue = _issue(created="2026-04-20T12:05:00.000+00:00")
+    ev = cli._maybe_synthesise_creation(
+        issue, since_iso="2026-04-20T12:00:00+00:00", real_events=[]
+    )
+    assert ev is not None
+    assert ev.is_new_issue is True
+    assert ev.issue_key == "COREPREP-3"
+    assert ev.issuetype == "Problem"
+    assert ev.id == 0
+    assert ev.created == datetime(2026, 4, 20, 12, 5, tzinfo=UTC)
+
+
+def test_synthesise_creation_skipped_on_cold_start() -> None:
+    issue = _issue(created="2026-04-20T12:05:00.000+00:00")
+    assert cli._maybe_synthesise_creation(issue, since_iso=None, real_events=[]) is None
+
+
+def test_synthesise_creation_skipped_when_issue_older_than_watermark() -> None:
+    issue = _issue(created="2026-04-20T11:00:00.000+00:00")
+    assert (
+        cli._maybe_synthesise_creation(issue, since_iso="2026-04-20T12:00:00+00:00", real_events=[])
+        is None
+    )
+
+
+def test_synthesise_creation_skipped_when_real_event_already_marks_creation() -> None:
+    issue = _issue(created="2026-04-20T12:05:00.000+00:00")
+    real = ChangelogEvent(
+        id=10500,
+        issue_key="COREPREP-3",
+        created=datetime(2026, 4, 20, 12, 5, tzinfo=UTC),
+        issuetype="Problem",
+        is_new_issue=True,
+    )
+    assert (
+        cli._maybe_synthesise_creation(
+            issue, since_iso="2026-04-20T12:00:00+00:00", real_events=[real]
+        )
+        is None
+    )
+
+
+def test_synthesise_creation_skipped_when_issue_key_missing() -> None:
+    issue: dict[str, Any] = {
+        "fields": {"issuetype": {"name": "Problem"}, "created": "2026-04-20T12:05:00+00:00"},
+    }
+    assert (
+        cli._maybe_synthesise_creation(issue, since_iso="2026-04-20T12:00:00+00:00", real_events=[])
+        is None
+    )
+
+
+@pytest.mark.anyio
+async def test_fetch_new_events_synthesises_for_fresh_issue() -> None:
+    """_fetch_new_events appends a synthetic creation event and keeps max_id clean."""
+
+    class _FakeClient:
+        async def search_issues(
+            self, _jql: str, *, fields: list[str], max_results: int
+        ) -> list[dict[str, Any]]:
+            del fields, max_results
+            return [_issue(created="2026-04-20T12:05:00.000+00:00")]
+
+        async def iter_changelog_pages(self, _key: str) -> list[dict[str, Any]]:
+            # Empty changelog is the Jira Cloud Free reality for freshly
+            # created issues.
+            return [{"values": [], "isLast": True}]
+
+    events, max_id = await cli._fetch_new_events(
+        _FakeClient(),  # type: ignore[arg-type]
+        project_key="COREPREP",
+        since_id=10099,
+        since_iso="2026-04-20T12:00:00+00:00",
+    )
+    assert max_id == 10099  # synthetic id=0 does not advance watermark
+    assert len(events) == 1
+    assert events[0].is_new_issue is True
+    assert events[0].issue_key == "COREPREP-3"
+    assert events[0].id == 0
