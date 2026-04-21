@@ -26,6 +26,7 @@ from runner.rules import (
     HAS_HAD_TEST_FIELD,
     STALE_ELIGIBLE_FILTER,
     UNIT_ISSUE_TYPES,
+    default_story_points,
     rule1_unit_created,
     rule2_subtask_done,
     rule4_stale_scan,
@@ -168,6 +169,7 @@ async def test_rule1_happy_path_seeds_learn_subtask(httpx_mock: HTTPXMock) -> No
     assert body["summary"] == "[Intermediate][Learn] \u2014 Two-pointer traversal"
     assert body["parent"] == {"key": UNIT_KEY}
     assert any(lbl.startswith("idem:") for lbl in body["labels"])
+    assert body[CUSTOM_FIELD_IDS["Story Points"]] == 2  # Learn default
     put = next(r for r in httpx_mock.get_requests() if r.method == "PUT")
     assert json.loads(put.content)["fields"] == {CUSTOM_FIELD_IDS["Revision Target"]: 3}
 
@@ -243,6 +245,17 @@ async def test_rule1_filters_out_non_unit_creation_events(
 def test_unit_issue_types_matches_spec() -> None:
     expected = frozenset({"Problem", "Concept", "Implementation", "Pattern", "Debug"})
     assert expected == UNIT_ISSUE_TYPES
+
+
+def test_default_story_points_per_kind() -> None:
+    assert default_story_points("learn") == 2
+    assert default_story_points("revise") == 1
+    assert default_story_points("test") == 2
+
+
+def test_default_story_points_unknown_kind_raises() -> None:
+    with pytest.raises(KeyError):
+        default_story_points("revise#1")
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +377,7 @@ async def test_rule2_t2_learn_done_seeds_revise_one(httpx_mock: HTTPXMock) -> No
     assert body["summary"] == "[Intermediate][Revise#1] \u2014 Two Sum"
     assert body["duedate"] == "2026-04-22"  # Mon + 2bd = Wed
     assert any(lbl.startswith("idem:") for lbl in body["labels"])
+    assert body[CUSTOM_FIELD_IDS["Story Points"]] == 1  # Revise default
     assert _put_body(httpx_mock)[CUSTOM_FIELD_IDS["Work Type"]] == "Revise"
 
 
@@ -572,6 +586,7 @@ async def test_rule4_happy_path_creates_test_subtask(httpx_mock: HTTPXMock) -> N
     assert body["duedate"] == "2026-04-22"  # Mon + 2bd
     assert "test" in body["labels"]
     assert any(lbl.startswith("idem:") for lbl in body["labels"])
+    assert body[CUSTOM_FIELD_IDS["Story Points"]] == 2  # Test default
     put = next(r for r in httpx_mock.get_requests() if r.method == "PUT")
     assert json.loads(put.content)["fields"] == {CUSTOM_FIELD_IDS[HAS_HAD_TEST_FIELD]: True}
 
