@@ -35,12 +35,21 @@ STALE_POLL_THRESHOLD = timedelta(minutes=30)
 def _jql_updated_since(project_key: str, since_iso: str | None) -> str:
     """Build the poll-window JQL: project-scoped, system-config excluded.
 
+    The system-config exclusion uses ``(labels IS EMPTY OR labels !=
+    "runner-system")`` rather than a bare ``labels != "runner-system"``.
+    In JQL semantics a bare ``!=`` on ``labels`` matches only issues
+    that have at least one label, so fresh Units created without any
+    labels (the common Jira Cloud default) are silently dropped from
+    the poll window. Verified empirically on 2026-04-21 against
+    COREPREP-3/-4/-5, which were invisible to the bare form despite
+    being updated strictly after the watermark.
+
     When ``since_iso`` is present, narrows to ``updated >=`` that
     timestamp; the 1-minute cursor rewind (handled by the caller) plus
     changelog ``since_id`` filter tolerates clock skew without
     duplicating side-effects.
     """
-    base = f'project = "{project_key}" AND labels != "runner-system"'
+    base = f'project = "{project_key}" AND (labels IS EMPTY OR labels != "runner-system")'
     if since_iso:
         # Jira JQL requires "yyyy-MM-dd HH:mm" (no T, no timezone).
         jql_ts = since_iso.replace("T", " ")[:16]
